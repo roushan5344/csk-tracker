@@ -36,7 +36,8 @@ ALIASES = {"MS Dhoni": ["Thala", "Mahi"]}     # nicknames headlines use on their
 CRICKET = (r"\b(cricket\w*|ipl|csk|odis?|\w*t20\w*|tests?|wickets?|centur(y|ies)|fifty|fifties|innings|bat(ter|sman|smen|ting)s?"
            r"|bowl(s|ed|er|ers|ing)?|spinn?(er|ers)|pacers?|seamers?|all[- ]?round\w*|squads?|playing xi|bcci|icc|ranji|duleep"
            r"|vijay hazare|super kings|world cup|sa20|ilt20|bbl|cpl|big bash|the hundred|asia cup|asian games|league|hat-trick"
-           r"|runs|sixes|stumps|catch|skipper|captain\w*|kings|royals|titans|capitals|knight riders|sunrisers|nets|debut)\b")
+           r"|runs|sixes|stumps|catch|skipper|captain\w*|kings|royals|titans|capitals|knight riders|sunrisers|nets|debut"
+           r"|whistle ?podu|yellove)\b")            # CSK's slogans
 # Injury or availability news, used to flag players in match alerts (never to remove them).
 INJURY = (r"\b(injur\w*|ruled out|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|withdr[ae]w\w*"
           r"|miss(es|ed)? (the )?(rest|remainder|series|match|game|tour)|out of the|doubt\w*|limp\w* off|goes down"

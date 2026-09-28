@@ -96,7 +96,8 @@ for h, want in [
          ["Prashant Veer", "Kartik Sharma"]),       # Kartik Sharma is wrong (it's Kartik Siddhu): accepted, a miss is worse
         # a nickname counts only in a cricket headline ("Thala" is also the actor Ajith)
         ("Mahi bhai back in the nets ahead of IPL 2027", ["MS Dhoni"]),
-        ("Thala Ajith's new film to release on Diwali", [])]:
+        ("Thala Ajith's new film to release on Diwali", []),
+        ("POV: Thala smiled, and suddenly everything feels better! \U0001f979\U0001f49b#WhistlePodu", ["MS Dhoni"])]:   # CSK slogan
     assert t.tag_item(h, names, set()) == want, (h, t.tag_item(h, names, set()))
 # "appointment" is breaking only for a CSK / coach / captain appointment
 assert t.classify("Mohammad Yousuf names MS Dhoni appointment as decisive moment in Indian cricket's rise")[0] == "minor"

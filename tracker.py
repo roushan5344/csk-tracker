@@ -20,7 +20,8 @@ RANKS = {"minor": 0, "important": 1, "breaking": 2}
 
 BREAKING = (r"\b(retire[sd]?|retirement|ruled out|steps? down|sacked|released|retained|traded|signs|signed|appointed"
             r"|(new|named|as) (captain|skipper|vice-captain)|ban|banned|suspended|suspension|replacement|joins (csk|chennai)"
-            r"|appointment|(as|new|head)\s([\w ]{0,25}\s)?coach(es)?)\b")    # "as Chennai Super Kings coach"
+            r"|(csk|coach\w*|captain\w*|skipper)('s)? appointment|appointment of"   # not "names Dhoni appointment as..."
+            r"|(as|new|head)\s([\w ]{0,25}\s)?coach(es)?)\b")    # "as Chennai Super Kings coach"
 IMPORTANT = (r"\b(injur\w*|fitness|strain|niggle|side issue|hamstring|scans?|surgery|return\w*|comeback|back from|selected"
              r"|goes down|went down|limp\w* off|left the field|leaves the field|retired hurt|concussion|withdr[ae]w\w*"
              r"|squad|dropped|named|playing xi|doubt\w*|contract|auction|trade|captain\w*|interview|milestone|record"
@@ -182,14 +183,38 @@ def short_name(t, parts):
     first, last = parts[0], parts[-1]
     for m in re.finditer(rf"\b{re.escape(last)}\b", t):
         prev = re.search(r"([A-Z][a-z]+)\s+$", t[:m.start()])
-        if title_case or not prev or same_name(prev.group(1), parts[-2]):
+        if (title_case or not prev or same_name(prev.group(1), parts[-2])) and not someone_else(t, m, parts):
             return m
     if len(first) >= 3 and not first.isupper():                 # skip initials like "MS"
         for m in re.finditer(rf"\b{re.escape(first)}\b", t):
             nxt = re.match(r"\s+([A-Z][a-z]+)", t[m.end():])
-            if title_case or not nxt or same_name(nxt.group(1), last):
+            if (title_case or not nxt or same_name(nxt.group(1), last)) and not someone_else(t, m, parts):
                 return m
     return None
+
+other_names = {}                            # word -> full names of other cricketers using it; see set_other_names
+
+def set_other_names(cfg, db, roster_names):
+    """Other cricketers' full names: config "namesakes", the other CSK players, and everyone in the Cricbuzz squads
+    already fetched. A short-name match inside one of these ("Kuldeep Yadav", "KL Rahul") is that person, not ours."""
+    names = set(cfg.get("namesakes", [])) | set(roster_names)
+    for (players,) in db.execute("select players from match_squads"):
+        names |= {p["name"] for p in json.loads(players).values() if " " in p["name"]}
+    other_names.clear()
+    for n in names:
+        for w in n.lower().split():
+            other_names.setdefault(w, set()).add(n)
+
+def someone_else(t, m, parts):
+    """True if this match is part of another cricketer's full name written out in the headline. It can only reject
+    words that spell out a different person, so it never hides a story about our player."""
+    for other in other_names.get(m.group(0).lower(), ()):
+        o = other.split()
+        if o[-1].lower() == parts[-1].lower() and same_name(o[0], parts[0]):
+            continue                        # a spelling of our own player ("Matt Short" for Matthew Short)
+        if any(x.start() <= m.start() < x.end() for x in re.finditer(rf"\b{re.escape(other)}\b", t, re.I)):
+            return True
+    return False
 
 def mention(title, name):
     """'about' if the headline is about this player, 'passing' if he is only a yardstick for someone else, else None."""
@@ -250,12 +275,12 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
             continue
         imp, rumour = c[0], c[1] and not it.get("official")
         mark_seen(db, it["title"], it["when"])
-        latest.append({**it, "tags": tags, "importance": imp, "rumour": rumour})
-        if first_run:                       # don't spam old stories on first start
-            continue
         if it["when"] and it["when"] < fresh_after:     # seen for the first time but over a day old: record only
             continue
         if RANKS[imp] < RANKS[cfg["alert"]["min_importance"]]:
+            continue
+        latest.append({**it, "tags": tags, "importance": imp, "rumour": rumour})   # dashboard = what alerts cover
+        if first_run:                       # don't spam old stories on first start
             continue
         icon = {"breaking": "🚨", "important": "⚠️", "minor": "📰"}[imp]
         flag = " [RUMOUR]" if rumour else ""
@@ -628,7 +653,9 @@ def write_dashboard(roster, hits, latest, db, path=None):
                      f'<small>{html.escape(m["desc"])}, {html.escape(m["series"])}</small>')
         rows += f'<tr class="{cls}"><td>{html.escape(n)}</td><td>{badge}</td></tr>'
     news = ""
-    newest_first = sorted(latest, key=lambda i: (RANKS[i["importance"]], i["when"] or datetime.min.replace(tzinfo=IST)), reverse=True)
+    day_ago = datetime.now(IST) - ALERT_MAX_AGE     # stories drop off after 24 h, like the alerts
+    recent = [i for i in latest if not i["when"] or i["when"] >= day_ago]
+    newest_first = sorted(recent, key=lambda i: (RANKS[i["importance"]], i["when"] or datetime.min.replace(tzinfo=IST)), reverse=True)
     for it in newest_first[:60]:
         w = it["when"].strftime("%d %b %H:%M") if it["when"] else ""
         r = " <em>(rumour)</em>" if it["rumour"] else ""
@@ -645,7 +672,7 @@ tr.live{{background:#ffe066;font-weight:600}}.b{{color:#fff;padding:2px 8px;bord
 li{{margin:.4rem 0}}li.breaking b{{color:#c00}}li.important b{{color:#d97706}}small{{color:#666}}</style>
 <h1>💛 CSK Tracker</h1><p>Updated {datetime.now(IST):%d %b %Y %H:%M} IST</p>
 <h2>Squad ({len(names)})</h2><table>{rows}</table>
-<h2>News this session</h2><ul>{news or "<li>Nothing new yet.</li>"}</ul>"""
+<h2>News, last 24 hours</h2><ul>{news or "<li>Nothing new yet.</li>"}</ul>"""
     with open(path or os.path.join(HERE, "dashboard.html"), "w", encoding="utf-8") as f:
         f.write(page)
 
@@ -663,6 +690,7 @@ def run_cycle(cfg, db, state, dry_run, first_run):
         state["roster"] = [{"id": i, "name": n} for i, n in db.execute("select id, name from squad")] or cfg["roster"]
     roster = state["roster"]
     names = [p["name"] for p in roster]
+    set_other_names(cfg, db, names)
     latest = state.setdefault("latest", [])
     if due("news", iv["news"]):
         pn = due("player_news", iv["player_news"])

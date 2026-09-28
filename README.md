@@ -48,7 +48,9 @@ All times are IST. Run `python test_offline.py` after changes; it uses real Cric
   as PLAYING NOW; add it to `MATCH_STATES` in tracker.py.
 - News relevance is keyword-based: passing mentions ("X breaks Dhoni's record") are dropped, but some fluff gets through.
 - Missing a story is treated as worse than a wrong tag: a player is also matched by surname or first name alone
-  ("Ellis, Davies ruled out", "Ruturaj's gain"), so expect some alerts about other Khans, Yadavs, Shreyases etc.
+  ("Ellis, Davies ruled out", "Ruturaj's gain"). A headline that spells out another cricketer's full name
+  ("Kuldeep Yadav", "KL Rahul") isn't counted for our player: those names come from `namesakes` in config.json plus
+  every Cricbuzz squad the tracker reads. Some wrong tags remain, mostly non-cricket "Khan" stories.
 - Match alerts show recent injury headlines (last 4 days) under a player who isn't confirmed in the XI yet, marked
   ⚠️. The player is never removed because of news; Cricbuzz's squad and playing XI decide.
 - If Cricbuzz changes its page format you'll see `[warn] no match data...` or a roster-source warning.

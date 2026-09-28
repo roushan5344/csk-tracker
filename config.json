@@ -32,6 +32,17 @@
   "series_matches_url": "https://www.cricbuzz.com/cricket-series/{sid}/x/matches",
   "ipl_archive_url": "https://www.cricbuzz.com/cricket-scorecard-archives/{year}",
   "muted_players": [],
+  "namesakes": [
+    "Kuldeep Yadav", "Suryakumar Yadav", "Umesh Yadav", "Mayank Yadav", "Jayant Yadav", "Rohit Sharma",
+    "Abhishek Sharma", "Ishant Sharma", "Mohit Sharma", "Jitesh Sharma", "Karn Sharma", "Rahul Sharma",
+    "Zaheer Khan", "Rashid Khan", "Musheer Khan", "Avesh Khan", "Mohsin Khan", "Imran Khan",
+    "Arshdeep Singh", "Rinku Singh", "Harbhajan Singh", "Yuvraj Singh", "Ramandeep Singh", "Prabhsimran Singh",
+    "Axar Patel", "Harshal Patel", "Parthiv Patel", "Deepak Chahar", "Richa Ghosh", "Shreyas Iyer",
+    "KL Rahul", "Rahul Dravid", "Rahul Tripathi", "Rahul Tewatia", "Mukesh Kumar", "Bhuvneshwar Kumar",
+    "Akash Deep", "Ayush Badoni", "Shivam Mavi", "Kartik Tyagi", "Kartik Aaryan", "Craig Overton",
+    "Mitchell Johnson", "Henry Nicholls", "Henry Shipley", "Henry Crocombe", "Rehan Ahmed", "Shahbaz Ahmed",
+    "Sarfaraz Ahmed", "Nathan Lyon", "Nathan Smith", "Zak Crawley", "Jamie Smith", "Matt Short"
+  ],
   "roster_seed_note": "Seeded from the Cricbuzz CSK team page on 29 Sep 2026 (id = Cricbuzz profile id). The team page lists 24; the tracker adds Aman Khan, Spencer Johnson, Akash Madhwal, Dian Forrester, Macneil Noronha and Kuldip Yadav, from CSK's IPL 2026 match squads on Cricbuzz (30 players in total).",
   "roster": [
     {"id": "11813", "name": "Ruturaj Gaikwad"},

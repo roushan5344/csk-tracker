@@ -75,6 +75,22 @@ got = {i["title"]: (i["importance"], i["tags"]) for i in latest}
 assert got == KEEP, "\n".join(f"{v}  {k}" for k, v in got.items())
 print("news relevance OK:", len(KEEP), "kept,", len(DROP), "dropped")
 
+# Other cricketers' full names (config "namesakes" + Cricbuzz squads) take their words away from short-name
+# matches, but never from our own players. Real headlines, 26-29 Sep 2026.
+t.set_other_names(cfg, db, names)
+for h, want in [
+        ("Kuldeep Yadav Overtakes Venkatesh Prasad To Become India's 9th Highest Wicket-Taker In ODIs - News18", []),
+        ("KL Rahul guides Delhi to third straight IPL victory", []),
+        ("England Call Up Hat-Trick Hero Henry Crocombe For Sri Lanka ODI Series", []),
+        ("Ex-India Fast Bowler Zaheer Khan Appointed Chennai Super Kings Head Coach For IPL 2027", ["CSK"]),
+        ("WATCH: Matt Short’s Jaw-Dropping One-Handed Catch To Dismiss Marnus Labuschagne", ["Matthew Short"]),
+        ("Ellis, Davies ruled out to further deplete Aussies - cricket.com.au", ["Nathan Ellis"])]:
+    assert t.tag_item(h, names, set()) == want, (h, t.tag_item(h, names, set()))
+# "appointment" is breaking only for a CSK / coach / captain appointment
+assert t.classify("Mohammad Yousuf names MS Dhoni appointment as decisive moment in Indian cricket's rise")[0] == "minor"
+assert t.classify("‘The game gave me many chapters’ - Zaheer Khan reflects on journey after CSK appointment")[0] == "breaking"
+print("namesakes and appointment rank OK")
+
 latest2 = []
 t.process_items(cfg, db, t.parse_rss(rss([
     "MS Dhoni retires from IPL, CSK confirm - Cricbuzz",
@@ -95,7 +111,7 @@ n_sent, stale_latest = len(sent), []
 old = t.parse_rss(rss(["Ruturaj Gaikwad poised to strengthen India middle order in West Indies ODIs"],
                       datetime.now(t.IST) - timedelta(hours=30)))
 t.process_items(cfg, db, old, names, True, stale_latest, first_run=False)
-assert len(sent) == n_sent and len(stale_latest) == 1 and t.is_duplicate(db, old[0]["title"]), sent[n_sent:]
+assert len(sent) == n_sent and stale_latest == [] and t.is_duplicate(db, old[0]["title"]), sent[n_sent:]  # not on dashboard
 print("over-a-day-old stories: recorded, not alerted")
 assert "\nPublished " in sent[0] and sent[0].endswith("http://x/0"), sent[0]
 
@@ -371,6 +387,15 @@ assert len(sent) == 2, sent
 t.quiet_check_in(cfg, qdb, t0 + 8 * H, t.alerts_sent, True)
 assert len(sent) == 3 and silent[-1], sent
 print("quiet check-in OK (silent, every 3 quiet hours)")
+
+# Dashboard news = the last 24 hours only, like the alerts
+fresh_item = {"title": "Fresh story", "link": "http://x/f", "when": datetime.now(t.IST) - timedelta(hours=2),
+              "tags": ["CSK"], "importance": "minor", "rumour": False, "summary": ""}
+stale_item = {**fresh_item, "title": "Day-old story", "link": "http://x/s", "when": datetime.now(t.IST) - timedelta(hours=30)}
+t.write_dashboard(roster, [], [fresh_item, stale_item], db, os.path.join(tmp, "dash_age.html"))
+page = open(os.path.join(tmp, "dash_age.html"), encoding="utf-8").read()
+assert "Fresh story" in page and "Day-old story" not in page and "News, last 24 hours" in page
+print("dashboard shows only the last 24 hours of news")
 
 t.write_dashboard(roster, hits, latest, db, os.path.join(tmp, "dashboard.html"))
 print("dashboard written", os.path.getsize(os.path.join(tmp, "dashboard.html")), "bytes")

@@ -1,0 +1,57 @@
+{
+  "alert": {
+    "channel": "telegram",
+    "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id_env": "TELEGRAM_CHAT_ID",
+    "min_importance": "minor"
+  },
+  "intervals_seconds": {
+    "news": 600,
+    "player_news": 900,
+    "match_day_live": 90,
+    "roster": 86400
+  },
+  "team_queries": ["Chennai Super Kings", "CSK IPL", "MS Dhoni"],
+  "extra_rss_feeds": [
+    "https://www.espncricinfo.com/rss/content/story/feeds/0.xml",
+    "https://timesofindia.indiatimes.com/rssfeeds/54829575.cms"
+  ],
+  "roster_sources": ["https://www.cricbuzz.com/cricket-team/chennai-super-kings/58/players"],
+  "live_scores_url": "https://www.cricbuzz.com/cricket-match/live-scores",
+  "squads_url": "https://www.cricbuzz.com/cricket-match-squads/{id}",
+  "ipl_archive_url": "https://www.cricbuzz.com/cricket-scorecard-archives/{year}",
+  "muted_players": [],
+  "roster_seed_note": "Seeded from the Cricbuzz CSK team page on 29 Sep 2026 (id = Cricbuzz profile id). The team page lists 24; the tracker adds Aman Khan, Spencer Johnson, Akash Madhwal, Dian Forrester, Macneil Noronha and Kuldip Yadav, from CSK's IPL 2026 match squads on Cricbuzz (30 players in total).",
+  "roster": [
+    {"id": "11813", "name": "Ruturaj Gaikwad"},
+    {"id": "20538", "name": "Dewald Brevis"},
+    {"id": "1431163", "name": "Ayush Mhatre"},
+    {"id": "9456", "name": "Matthew Short"},
+    {"id": "9429", "name": "Sarfaraz Khan"},
+    {"id": "11195", "name": "Shivam Dube"},
+    {"id": "32835", "name": "Ramakrishna Ghosh"},
+    {"id": "14598", "name": "Anshul Kamboj"},
+    {"id": "8512", "name": "Jamie Overton"},
+    {"id": "24391", "name": "Zakary Foulkes"},
+    {"id": "51417", "name": "Prashant Veer"},
+    {"id": "265", "name": "MS Dhoni"},
+    {"id": "8271", "name": "Sanju Samson"},
+    {"id": "13476", "name": "Urvil Patel"},
+    {"id": "49557", "name": "Kartik Sharma"},
+    {"id": "9746", "name": "Shreyas Gopal"},
+    {"id": "13184", "name": "Mukesh Choudhary"},
+    {"id": "15480", "name": "Nathan Ellis"},
+    {"id": "19807", "name": "Gurjapneet Singh"},
+    {"id": "15452", "name": "Noor Ahmad"},
+    {"id": "10952", "name": "Khaleel Ahmed"},
+    {"id": "8435", "name": "Akeal Hosein"},
+    {"id": "9067", "name": "Matt Henry"},
+    {"id": "12087", "name": "Rahul Chahar"},
+    {"id": "19473", "name": "Aman Khan"},
+    {"id": "13143", "name": "Spencer Johnson"},
+    {"id": "15727", "name": "Akash Madhwal"},
+    {"id": "50444", "name": "Dian Forrester"},
+    {"id": "29181", "name": "Macneil Noronha"},
+    {"id": "13537", "name": "Kuldip Yadav"}
+  ]
+}

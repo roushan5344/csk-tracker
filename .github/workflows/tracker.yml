@@ -1,6 +1,7 @@
 name: csk-tracker
 on:
-  schedule: [{cron: "*/10 * * * *"}]   # GitHub's fastest reliable interval; may lag a few minutes
+  schedule:
+    - cron: "*/10 * * * *"   # GitHub's fastest reliable interval; may lag a few minutes
   workflow_dispatch:
 concurrency: csk-tracker
 jobs:
@@ -8,8 +9,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: actions/cache@v4            # keeps state.db so you never get repeat alerts
-        with: {path: state.db, key: state-${{ github.run_id }}, restore-keys: state-}
+        with:
+          path: state.db
+          key: state-${{ github.run_id }}
+          restore-keys: state-
       - run: python tracker.py --once
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

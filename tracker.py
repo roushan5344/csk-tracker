@@ -28,7 +28,8 @@ IMPORTANT = (r"\b(injur\w*|fitness|strain|niggle|side issue|hamstring|scans?|sur
 RUMOUR = r"\b(reportedly|rumou?rs?|speculat\w*|sources say|likely to|set to|could|may|might|claims? that|unconfirmed|tipped)\b"
 CLICKBAIT = r"you won't believe|shocking|viral|goes wild|breaks the internet|netizens|\bmemes?\b|jaw-dropping|watch:"
 # Cricbuzz match/team pages that Google News lists as if they were stories.
-NOT_ARTICLE = r" - (squads|match info|live scores?|scorecard|(full )?commentary|points table|schedule|results)\b"
+NOT_ARTICLE = (r" - (squads|match info|live scores?|scorecard|(full )?commentary|points table|schedule|results)\b"
+               r"|\b(live (full )?scorecard|full scorecard|live (cricket )?scores?|match info|points table|squad ipl \d{4})\b")
 ALIASES = {"MS Dhoni": ["Thala", "Mahi"]}     # nicknames headlines use on their own
 # Injury or availability news, used to flag players in match alerts (never to remove them).
 INJURY = (r"\b(injur\w*|ruled out|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|withdr[ae]w\w*"
@@ -43,7 +44,8 @@ PASSING = [r"\b(joins|equals?|equalled|breaks?|broke|surpass\w*|overtak\w*|goes 
            r"\bfrom\s([\w.]+\s){{0,2}}{s}'s\b",
            r",\s([\w.]+\s)?{s},"]            # one name in a list: "Rohit, Dhoni, Bumrah"
 CSK_TEAM_ID, CSK_SHORT = 58, "CSK"          # Cricbuzz team id and the short name its squad lists use
-MAX_NEWS_AGE = timedelta(days=3)
+MAX_NEWS_AGE = timedelta(days=3)            # older stories are ignored entirely
+ALERT_MAX_AGE = timedelta(hours=24)         # older unseen ones (backlog, re-dated pages) are recorded, not alerted
 # Cricbuzz matchInfo "state" values. Seen live on 29 Sep 2026: Preview, Upcoming, Stumps, Complete, Abandon.
 # The in-play ones follow Cricbuzz's usual wording; anything unrecognised is reported, never shown as live.
 MATCH_STATES = {"live": {"in progress", "innings break", "lunch", "tea", "dinner", "drink", "drinks", "rain", "delay",
@@ -233,7 +235,8 @@ def mark_seen(db, title, when=None):
     db.commit()
 
 def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
-    oldest = datetime.now(IST) - MAX_NEWS_AGE
+    now = datetime.now(IST)
+    oldest, fresh_after = now - MAX_NEWS_AGE, now - ALERT_MAX_AGE
     for it in items:
         if (it["when"] and it["when"] < oldest) or not is_article(it["title"]):
             continue
@@ -249,6 +252,8 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
         mark_seen(db, it["title"], it["when"])
         latest.append({**it, "tags": tags, "importance": imp, "rumour": rumour})
         if first_run:                       # don't spam old stories on first start
+            continue
+        if it["when"] and it["when"] < fresh_after:     # seen for the first time but over a day old: record only
             continue
         if RANKS[imp] < RANKS[cfg["alert"]["min_importance"]]:
             continue

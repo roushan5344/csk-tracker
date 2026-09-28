@@ -60,6 +60,9 @@ DROP = [
     "Who have scored the most ODI centuries while batting at no. 5 or lower? | Miller recorded career-best score of 142 vs Aus | Inshorts - Inshorts",
     "SHOCKING: Dhoni viral video breaks the internet",
     "Unrelated news about football",
+    "GT vs CSK Live Full Scorecard",                                                 # old pages Bing re-dated to
+    "CSK Squad IPL 2026",                                                            # 26 Sep, not news
+    "Live Cricket Score, Schedule, Latest News, Stats & Videos - cricbuzz.com",
 ]
 # The surname rule must reject other people with a tracked player's surname.
 assert t.tag_item("Rhythm, control and a Kuldeep Yadav masterclass", ["Kuldip Yadav"], set()) == []
@@ -85,6 +88,15 @@ assert latest2[0]["importance"] == "breaking" and not latest2[0]["rumour"]
 assert latest2[1]["rumour"] and latest2[1]["importance"] != "breaking"
 assert latest2[2]["tags"] == ["Noor Ahmad"]
 print("dedupe / rumour / age OK")
+
+# A story seen for the first time but published over 24 h ago (real: 26 Sep, reached us on 29 Sep via Bing) is
+# recorded for injury flags and dedupe, but not alerted.
+n_sent, stale_latest = len(sent), []
+old = t.parse_rss(rss(["Ruturaj Gaikwad poised to strengthen India middle order in West Indies ODIs"],
+                      datetime.now(t.IST) - timedelta(hours=30)))
+t.process_items(cfg, db, old, names, True, stale_latest, first_run=False)
+assert len(sent) == n_sent and len(stale_latest) == 1 and t.is_duplicate(db, old[0]["title"]), sent[n_sent:]
+print("over-a-day-old stories: recorded, not alerted")
 assert "\nPublished " in sent[0] and sent[0].endswith("http://x/0"), sent[0]
 
 # One-line summaries: real Times of India description (kept) and Google News one (only repeats the headline).

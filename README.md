@@ -40,6 +40,10 @@ yet, it uses the previous match of the same series and marks the player "expecte
   TOMORROW: player, team, opponent, format, start time. A silent one-liner if there are none.
 - **NEW MATCH**: a match found after the digest (or one starting before it) is sent straight away, once.
 - **PLAYING NOW**: once per match, only when it is live and the player is in the XI (or squad, before the XI is out).
+- **Matches only the news mentions** (practice games, trials): a story saying a CSK player "will play / set to play /
+  to feature" with a day ("today", "Tuesday", "30 September", counted from the publish date) goes into the digest as
+  "Match per news, not an official fixture", with the headline. If the headline and summary give no day, the article
+  itself is read (not possible for Google News links). "Two-day" etc. matches are listed on each day.
 All times are IST. Run `python test_offline.py` after changes; it uses real Cricbuzz/Google News samples.
 
 ## Known limits

@@ -10,7 +10,7 @@ Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable Telegram alerts.
 import argparse, hashlib, html, json, os, re, sqlite3, sys, time
 import urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +38,15 @@ CRICKET = (r"\b(cricket\w*|ipl|csk|odis?|\w*t20\w*|tests?|wickets?|centur(y|ies)
            r"|vijay hazare|super kings|world cup|sa20|ilt20|bbl|cpl|big bash|the hundred|asia cup|asian games|league|hat-trick"
            r"|runs|sixes|stumps|catch|skipper|captain\w*|kings|royals|titans|capitals|knight riders|sunrisers|nets|debut"
            r"|whistle ?podu|yellove)\b")            # CSK's slogans
+# News saying a player will play ("to play", "will feature", "set to turn out", "named in"), and the day words used
+# to find when: today, tomorrow, a weekday, or a date like "30 September".
+PLAY_PHRASE = (r"\b(to|will|shall)\s+(play|feature|turn out|appear|captain|lead|make (his |a )?(debut|comeback|return))\b"
+               r"|\b(named|picked|included|selected) (in|for)\b")
+DAY_WORDS = (r"\b(today|tonight|tomorrow|(mon|tues|wednes|thurs|fri|satur|sun)day"
+             r"|\d{1,2}(st|nd|rd|th)? (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*"
+             r"|(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2}(st|nd|rd|th)?)\b")
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 # Injury or availability news, used to flag players in match alerts (never to remove them).
 INJURY = (r"\b(injur\w*|ruled out|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|withdr[ae]w\w*"
           r"|miss(es|ed)? (the )?(rest|remainder|series|match|game|tour)|out of the|doubt\w*|limp\w* off|goes down"
@@ -109,6 +118,10 @@ def db_connect(path=None):
     db.execute("create table if not exists squad(id text primary key, name text)")
     db.execute("create table if not exists kv(k text primary key, v text)")
     db.execute("create table if not exists match_squads(match_id text primary key, ts real, state text, players text)")
+    # matches only the news mentions (practice games, trials), and which stories were already checked for one
+    db.execute("create table if not exists news_fixtures(player text, day text, days integer, title text, link text,"
+               " source text, primary key(player, day))")
+    db.execute("create table if not exists news_checked(key text primary key, ts real)")
     return db
 
 # ---------- alerts ----------
@@ -275,7 +288,10 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
         if not tags:
             continue
         c = classify(it["title"])
-        if c is None or is_duplicate(db, it["title"]):
+        if c is None:
+            continue
+        record_news_fixture(db, it, tags, roster_names)     # stories seen before too: each is checked once
+        if is_duplicate(db, it["title"]):
             continue
         imp, rumour = c[0], c[1] and not it.get("official")
         mark_seen(db, it["title"], it["when"])
@@ -291,6 +307,92 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
         lines = [f"{icon} {imp.upper()}{flag} | {', '.join(tags)}", it["title"], it.get("summary"),
                  f"Published {ist(it['when'])}" if it["when"] else "", it["source"], it["link"]]
         send_alert(cfg, "\n".join(x for x in lines if x), dry_run)
+
+def day_from_words(w, pub):
+    """One day expression ("Tuesday", "tomorrow", "30 September") -> a date, counted from the publish date."""
+    w, d = w.lower(), pub.astimezone(IST).date()
+    if w in ("today", "tonight"):
+        return d
+    if w == "tomorrow":
+        return d + timedelta(days=1)
+    if w in WEEKDAYS:
+        return d + timedelta(days=(WEEKDAYS.index(w) - d.weekday()) % 7)
+    try:
+        return d.replace(month=MONTHS.index(re.search(r"[a-z]{3}", w).group()) + 1, day=int(re.search(r"\d+", w).group()))
+    except ValueError:
+        return None
+
+def news_match_days(text, player, pub):
+    """(first day, number of days) of a match the text says this player will play, or None. Only sentences naming
+    him count (page sidebars carry other dates), and a day word after the "will play" phrase is preferred."""
+    parts = player.split()
+    names = [n for n in (parts[-1], parts[0]) if len(n) >= 3 and not n.isupper()]
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", text)
+    for s in sentences:
+        play = re.search(PLAY_PHRASE, s, re.I)
+        if len(s) > 500:                    # page menus and datelines without full stops, not an article sentence
+            continue
+        if not play or not any(re.search(rf"\b{re.escape(n)}\b", s) for n in names):
+            continue
+        words = list(re.finditer(DAY_WORDS, s, re.I))
+        after = [m for m in words if m.start() >= play.start()]
+        day = day_from_words((after or words)[0].group(0), pub) if words else None
+        if day:
+            span = re.search(r"\b(two|three|four|five)-day\b", " ".join(x for x in sentences if re.search(PLAY_PHRASE, x, re.I)), re.I)
+            return day, {"two": 2, "three": 3, "four": 4, "five": 5}[span.group(1).lower()] if span else 1
+    return None
+
+def article_text(url):
+    """Page text with one line per paragraph or block, so a header can't run into the first sentence."""
+    page = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", http_get(url))
+    page = re.sub(r"(?i)</(p|div|h[1-6]|li|td|section|article|header)>|<br\s*/?>", "\n", page)
+    return re.sub(r"[^\S\n]+", " ", html.unescape(re.sub(r"<[^>]+>", " ", page)))
+
+def record_news_fixture(db, it, tags, roster_names):
+    """Remember a match a story says a CSK player will play: practice games and trials that Cricbuzz doesn't list.
+    Each story is checked once; its article is read only if the headline and summary don't give the day (Google News
+    links can't be read, so those count on the headline alone)."""
+    players = [p for p in tags if p in roster_names or p == "MS Dhoni"]
+    text = f"{it['title']}. {it.get('summary') or ''}"
+    if not players or not it["when"] or not re.search(PLAY_PHRASE, text, re.I):
+        return
+    key = hashlib.sha1(norm(it["title"]).encode()).hexdigest()
+    if db.execute("select 1 from news_checked where key=?", (key,)).fetchone():
+        return
+    db.execute("insert into news_checked values(?,?)", (key, time.time()))
+    article = None
+    for p in players:
+        found = news_match_days(text, p, it["when"])
+        if not found and "news.google.com" not in it["link"]:
+            if article is None:
+                try:
+                    article = article_text(it["link"])
+                except Exception as e:
+                    print(f"[warn] article {it['link']} failed: {e}", file=sys.stderr)
+                    article = ""
+            found = news_match_days(article, p, it["when"])
+        if found:
+            db.execute("insert or ignore into news_fixtures values(?,?,?,?,?,?)",
+                       (p, found[0].isoformat(), found[1], re.sub(r"\s[-|]\s[^-|]+$", "", it["title"]), it["link"],
+                        it["source"] or urllib.parse.urlparse(it["link"]).netloc))
+    db.execute("delete from news_checked where ts < ?", (time.time() - 10 * 86400,))
+    db.commit()
+
+def news_fixture_hits(cfg, db, now):
+    """Match hits for news-only matches running today or starting tomorrow (see record_news_fixture)."""
+    today, hour, out = now.date(), cfg["alert"].get("match_digest_hour", 8), []
+    for player, day, days, title, link, source in db.execute(
+            "select player, day, days, title, link, source from news_fixtures"):
+        first = date.fromisoformat(day)
+        if first + timedelta(days=days - 1) < today or first > today + timedelta(days=1):
+            continue
+        shown = max(first, today)
+        m = {"id": f"news:{player}:{day}", "phase": "news", "first": first, "days": days,
+             "start": datetime(shown.year, shown.month, shown.day, hour, tzinfo=IST),   # held for the digest
+             "title": title, "teams": [], "format": "", "desc": "per news, not an official fixture",
+             "series": source, "state": "", "status": "", "url": link, "series_id": ""}
+        out.append({"player": player, "team": "", "opponent": "", "role": "news", "match": m})
+    return out
 
 def fetch_news(cfg, roster_names, include_players):
     queries = list(cfg["team_queries"])
@@ -503,7 +605,8 @@ def players_in_matches(matches, roster, squads):
                 hits.append({"player": p["name"], "team": team, "opponent": opponent, "role": role, "match": m})
     return hits
 
-ROLE_TEXT = {"xi": "playing XI", "squad": "in squad", "bench": "on bench", "expected": "expected, squad not out yet"}
+ROLE_TEXT = {"xi": "playing XI", "squad": "in squad", "bench": "on bench", "expected": "expected, squad not out yet",
+             "news": "per news"}
 
 def day_label(dt, now):
     days = (dt.astimezone(IST).date() - now.date()).days
@@ -519,6 +622,8 @@ def describe(h, now=None):
     if m["phase"] == "upcoming" and m["start"]:
         return "soon", (f"PLAYING {day_label(m['start'], now)}, starts {ist(m['start'])}, {ROLE_TEXT[role]}"
                         + (" ⚠️ injury news" if h.get("injury") else ""))
+    if m["phase"] == "news":
+        return "soon", f"PLAYING {day_label(m['start'], now)}, per news (not an official fixture)"
     if m["phase"] == "paused":
         return "off", f"{m['state']}: {m['status']}"
     return "off", f"Cricbuzz state '{m['state']}': {m['status']}"
@@ -526,6 +631,10 @@ def describe(h, now=None):
 def match_block(hs):
     """Lines for one match in a digest or alert: teams, format, start time, then the CSK players in it."""
     m = hs[0]["match"]
+    if m["phase"] == "news":                # a match only the news mentions: no teams or time, show the story
+        span = f", {m['days']}-day match from {m['first']:%a %d %b}" if m["days"] > 1 else ""
+        lines = [f"• Match per news, not an official fixture{span}"] + [f"   {h['player']}" for h in hs]
+        return "\n".join(lines + [f"   “{m['title']}” ({m['series']})\n   {m['url']}"])
     when = {"live": "LIVE now", "paused": m["state"]}.get(m["phase"], f"starts {m['start']:%H:%M} IST")
     lines = [f"• {m['teams'][0][0]} vs {m['teams'][1][0]} · {m['format'] or '?'} · {when}"]
     for h in hs:
@@ -569,9 +678,8 @@ def check_matches(cfg, db, roster, dry_run):
     except Exception as e:
         print(f"[warn] schedule failed: {e}", file=sys.stderr)
         scheduled = []
-    if not live and not scheduled:
+    if not live and not scheduled:          # carry on: matches found in the news still count
         print("[warn] no match data on Cricbuzz; its page format may have changed", file=sys.stderr)
-        return []
     now = datetime.now(IST)
     matches = {m["id"]: m for m in scheduled if m["start"] and m["start"] > now}   # started ones: trust live scores
     matches.update({m["id"]: m for m in live})
@@ -591,6 +699,7 @@ def check_matches(cfg, db, roster, dry_run):
     for h in hits:                          # before the XI is out, flag recent injury news (the XI itself is definitive)
         if h["role"] in ("squad", "expected"):
             h["injury"] = injury_news(db, h["player"])
+    hits += news_fixture_hits(cfg, db, now)         # practice games, trials: matches only the news mentions
     kv = lambda k: db.execute("select 1 from kv where k=?", (k,)).fetchone()
     mark = lambda k: db.execute("insert or replace into kv values(?,?)", (k, "1"))
 
@@ -611,7 +720,7 @@ def check_matches(cfg, db, roster, dry_run):
 
     # 2. Morning digest of today's and tomorrow's matches, then an alert for any match found after it.
     coming = [h for h in hits if h["role"] != "bench" and h["match"]["start"]
-              and (h["match"]["phase"] in ("live", "paused")
+              and (h["match"]["phase"] in ("live", "paused", "news")
                    or (h["match"]["phase"] == "upcoming" and (h["match"]["start"].date() - now.date()).days in (0, 1)))]
     hour = cfg["alert"].get("match_digest_hour", 8)
     digest_at = now.replace(hour=hour, minute=0, second=0, microsecond=0)
@@ -626,7 +735,7 @@ def check_matches(cfg, db, roster, dry_run):
             send_alert(cfg, "📅 No CSK player has a match today or tomorrow.", dry_run, silent=True)
         return hits
     digest_done = now >= digest_at                          # before 8 AM: hold matches the digest will cover
-    new = [h for h in coming if h["match"]["phase"] == "upcoming"   # live ones already got PLAYING NOW
+    new = [h for h in coming if h["match"]["phase"] in ("upcoming", "news")   # live ones already got PLAYING NOW
            and not kv(f"announced:{h['match']['id']}") and (digest_done or h["match"]["start"] < digest_at)]
     if new:
         for h in new:

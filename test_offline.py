@@ -15,6 +15,9 @@ def fake_send(c, text, d=False, silent_=False, **kw):
     sent.append(text)
     silent.append(kw.get("silent", silent_))
 t.send_alert = fake_send
+def offline(url, timeout=20):           # the tests never touch the network; sections below swap in fake pages
+    raise OSError(f"offline test: {url}")
+t.http_get = offline
 
 # ---------- news ----------
 def rss(titles, when=None):
@@ -332,6 +335,62 @@ t.check_matches(cfg, t.db_connect(os.path.join(tmp, "quiet_day.db")), [], True)
 assert sent == ["📅 No CSK player has a match today or tomorrow."] and silent == [True], sent
 t.datetime = real_now
 print("match alerts OK: PLAYING NOW, morning digest (today + tomorrow), expected squads, new-match alerts")
+
+# ---------- matches only the news mentions (real: Ayush Mhatre's practice match, not on Cricbuzz) ----------
+TOI_URL = ("https://timesofindia.indiatimes.com/sports/cricket/news/back-from-hamstring-injury-ayush-mhatre-to-play-"
+           "his-first-competitive-match-in-5-months/articleshow/1.cms")
+TOI_PAGE = ("<html><body><div>Back from hamstring injury, Ayush Mhatre to play his first competitive match in 5 months | "
+            "Cricket News - The Times of India " + "Menu Cricket Asian Games IND Vs AFG IND Vs WI NFL NBA NHL " * 10 +
+            "TOI Sports Desk / Updated: Sep 28, 2026, 12:09 IST Today</div>"   # real page header: no full stops
+            "<p>In a major boost to Mumbai ahead of the 2026-27 Ranji Trophy season, opener Ayush Mhatre, out "
+            "of action since he suffered a bad hamstring injury while playing for the Chennai Super Kings during IPL-2026, "
+            "will play his first competitive match in almost five months when he will turn out in a practice match amongst "
+            "Mumbai's Ranji Trophy probables at the Cricket Club of India on Tuesday.</p><p>\"He will play in a two-day "
+            "practice match, organised by the Mumbai Cricket Association for Mumbai's Ranji Trophy probables, at the "
+            "Brabourne Stadium from Tuesday,\" Ayush's father Yogesh Mhatre told TOI on Monday.</p>"
+            "<div>Videos: Speaker Gets October 10 Deadline</div></body></html>")      # sidebar date must be ignored
+TOI_RSS = ("<rss><channel><item><title>Back from hamstring injury, Ayush Mhatre to play his first competitive match in "
+           f"5 months</title><link>{TOI_URL}</link><pubDate>Mon, 28 Sep 2026 06:39:00 GMT</pubDate>"   # 12:09 IST
+           "<description>In a major boost to Mumbai ahead of the 2026-27 Ranji Trophy season, opener Ayush Mhatre, out "
+           "of action since he suffered a bad hamstring injury while playing for the Chennai…</description>"
+           "</item></channel></rss>")
+fetched = []
+def news_get(url, timeout=20):
+    fetched.append(url)
+    if url == TOI_URL: return TOI_PAGE
+    if url in (cfg["live_scores_url"], cfg["schedule_url"]): return next_page()     # nothing on Cricbuzz
+    raise OSError(url)
+t.http_get = news_get
+ndb, sent[:] = t.db_connect(os.path.join(tmp, "news_match.db")), []
+NOW[0] = datetime(2026, 9, 28, 20, 0, tzinfo=t.IST)           # Monday evening: the story arrives
+t.datetime = FakeNow
+t.process_items(cfg, ndb, t.parse_rss(TOI_RSS), names, True, [], first_run=False)
+t.process_items(cfg, ndb, t.parse_rss(TOI_RSS), names, True, [], first_run=False)   # seen again: not re-read
+assert fetched.count(TOI_URL) == 1, fetched
+assert ndb.execute("select player, day, days from news_fixtures").fetchall() == [("Ayush Mhatre", "2026-09-29", 2)]
+ndb.execute("insert into kv values('digest:2026-09-28', '1')"); ndb.commit()   # Monday's 8 AM digest already went out
+sent[:] = []
+t.check_matches(cfg, ndb, roster, True)                        # 20:00 Monday: found after the digest -> sent now
+t.check_matches(cfg, ndb, roster, True)
+assert len(sent) == 1 and sent[0].startswith(
+    "📅 NEW MATCH FOR CSK PLAYERS\n\nTOMORROW (Tue 29 Sep)\n• Match per news, not an official fixture, 2-day match from "
+    "Tue 29 Sep\n   Ayush Mhatre\n   “Back from hamstring injury, Ayush Mhatre to play his first competitive match in "
+    "5 months” (timesofindia.indiatimes.com)\n   https://timesofindia.indiatimes.com/"), sent
+NOW[0] = datetime(2026, 9, 29, 3, 0, tzinfo=t.IST)
+t.check_matches(cfg, ndb, roster, True)                        # 03:00: no repeat
+NOW[0] = datetime(2026, 9, 29, 8, 5, tzinfo=t.IST)
+t.check_matches(cfg, ndb, roster, True)                        # 08:05 digest lists it under today
+assert len(sent) == 2 and sent[1].startswith("📅 CSK PLAYERS' MATCHES\n\nTODAY (Tue 29 Sep)\n• Match per news"), sent
+NOW[0] = datetime(2026, 9, 30, 8, 5, tzinfo=t.IST)            # day 2 of the practice match: still listed today
+t.check_matches(cfg, ndb, roster, True)
+assert len(sent) == 3 and "TODAY (Wed 30 Sep)\n• Match per news" in sent[2] and "Ayush Mhatre" in sent[2], sent[2]
+hit = t.news_fixture_hits(cfg, ndb, NOW[0])[0]
+assert t.describe(hit, NOW[0])[1] == "PLAYING TODAY, per news (not an official fixture)"
+NOW[0] = datetime(2026, 10, 1, 8, 5, tzinfo=t.IST)            # match over
+assert t.news_fixture_hits(cfg, ndb, NOW[0]) == []
+t.datetime = real_now
+samples.append(sent[0])
+print("news-only matches OK: practice match found from the article, held for the digest, both days listed")
 
 # Polling: last-run times are saved in state.db, so a second --once run (fresh process) skips roster and news.
 t.HERE, calls = tmp, []                                       # keep run_cycle's dashboard.html in the temp folder

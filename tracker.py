@@ -178,25 +178,19 @@ def same_name(a, b):
     return a.startswith(b) or b.startswith(a)                   # "Zak" for "Zakary", "Matt" for "Matthew"
 
 def short_name(t, parts):
-    """Match a player by one name alone: surname ("Ellis, Davies ruled out") or first name ("Ruturaj's gain").
-    Missing a story is worse than a wrong tag, so any capitalised match counts, unless the headline is in sentence
-    case and a different name sits right next to it: "Kuldeep Yadav" is not Kuldip Yadav, "Shreyas Iyer" is not
-    Shreyas Gopal. (In Title Case headlines every word is capitalised, so that check can't be made.)"""
-    small = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "vs", "v", "with"}
-    head = re.sub(r"\s[-|]\s[^-|]+$", "", t)                   # publisher suffix is always capitalised
-    title_case = sum(w[0].islower() and w not in small for w in re.findall(r"[A-Za-z][\w']*", head)) <= 1
+    """Match a player by one name alone. Missing a story is worse than a wrong tag, so:
+    - the surname alone counts ("Ellis, Davies ruled out", "Macneil Hadley Noronha");
+    - the first name alone counts in a cricket headline: one with the surname anywhere ("Jamie and Craig Overton")
+      or a cricket word ("Ruturaj's gain: CSK skipper..."), which keeps out "Matt Cardona mourns PAC's death";
+    - neither counts when it is part of another cricketer's full name ("Kuldeep Yadav" is not Kuldip Yadav)."""
     first, last = parts[0], parts[-1]
     for m in re.finditer(rf"\b{re.escape(last)}\b", t):
-        prev = re.search(r"([A-Z][a-z]+)\s+$", t[:m.start()])
-        if (title_case or not prev or same_name(prev.group(1), parts[-2])) and not someone_else(t, m, parts):
+        if not someone_else(t, m, parts):
             return m
-    # A first name alone ("Ruturaj's gain", "Noor, Naib out") counts only in a cricket headline: one that also has
-    # the surname anywhere ("Jamie and Craig Overton") or a cricket word. Keeps out "Matt Cardona mourns PAC's death".
     cricket = re.search(rf"\b{re.escape(last)}", t, re.I) or re.search(CRICKET, t, re.I)
     if len(first) >= 3 and not first.isupper() and cricket:    # skip initials like "MS"
         for m in re.finditer(rf"\b{re.escape(first)}\b", t):
-            nxt = re.match(r"\s+([A-Z][a-z]+)", t[m.end():])
-            if (title_case or not nxt or same_name(nxt.group(1), last)) and not someone_else(t, m, parts):
+            if not someone_else(t, m, parts):
                 return m
     return None
 

@@ -3,7 +3,8 @@
     "channel": "telegram",
     "telegram_bot_token_env": "TELEGRAM_BOT_TOKEN",
     "telegram_chat_id_env": "TELEGRAM_CHAT_ID",
-    "min_importance": "minor"
+    "min_importance": "minor",
+    "quiet_update_hours": 3
   },
   "intervals_seconds": {
     "news": 600,

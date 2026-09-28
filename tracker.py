@@ -97,7 +97,11 @@ def db_connect(path=None):
     return db
 
 # ---------- alerts ----------
-def send_alert(cfg, text, dry_run=False):
+alerts_sent = 0                             # counts alerts, so a cycle knows whether anything new went out
+
+def send_alert(cfg, text, dry_run=False, silent=False):
+    global alerts_sent
+    alerts_sent += 1
     stamp = datetime.now(IST).strftime("%d %b %H:%M IST")
     text = f"{text}\n🕒 {stamp}"
     token = os.environ.get(cfg["alert"]["telegram_bot_token_env"], "")
@@ -105,8 +109,8 @@ def send_alert(cfg, text, dry_run=False):
     if dry_run or not (token and chat):
         print("\n--- ALERT (not sent: dry-run or Telegram not configured) ---\n" + text + "\n")
         return
-    data = urllib.parse.urlencode({"chat_id": chat, "text": text,
-                                   "disable_web_page_preview": "false"}).encode()
+    data = urllib.parse.urlencode({"chat_id": chat, "text": text, "disable_web_page_preview": "false",
+                                   "disable_notification": "true" if silent else "false"}).encode()
     try:
         urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data, timeout=20)
     except Exception as e:
@@ -493,7 +497,7 @@ li{{margin:.4rem 0}}li.breaking b{{color:#c00}}li.important b{{color:#d97706}}sm
 
 # ---------- main loop ----------
 def run_cycle(cfg, db, state, dry_run, first_run):
-    now = time.time(); iv = cfg["intervals_seconds"]
+    now = time.time(); iv = cfg["intervals_seconds"]; sent_before = alerts_sent
     # Last-run times live in state.db, so separate --once runs (GitHub Actions) also slow down roster and player news.
     last = {k: float(v) for k, v in db.execute("select k, v from kv where k like 'last:%'")}
     due = lambda job, every: now - last.get(f"last:{job}", 0) >= every - 60   # 60 s slack for cron jitter
@@ -513,7 +517,22 @@ def run_cycle(cfg, db, state, dry_run, first_run):
         if pn: done("player_news")
     hits = check_matches(cfg, db, roster, dry_run)
     write_dashboard(roster, hits, latest, db)
+    quiet_check_in(cfg, db, now, sent_before, dry_run)
     return hits
+
+def quiet_check_in(cfg, db, now, sent_before, dry_run):
+    """Every quiet_update_hours without any alert, send one silent "no new updates" message.
+    It doubles as proof that the tracker is still running."""
+    get = lambda k: db.execute("select v from kv where k=?", (k,)).fetchone()
+    put = lambda k: db.execute("insert or replace into kv values(?,?)", (k, str(now)))
+    if alerts_sent > sent_before or not get("last:quiet"):   # something went out, or first run: restart the clock
+        put("last:quiet"); db.commit()
+        return
+    since = float(get("last:quiet")[0])
+    if now - since >= cfg["alert"].get("quiet_update_hours", 3) * 3600 - 60:
+        put("last:quiet"); db.commit()
+        send_alert(cfg, f"✅ No new updates since {ist(datetime.fromtimestamp(since, IST))}.\n"
+                        "Tracker is running normally.", dry_run, silent=True)
 
 def main():
     ap = argparse.ArgumentParser()

@@ -9,7 +9,12 @@ cfg = t.load_config()
 roster = cfg["roster"]
 names = [p["name"] for p in roster]
 sent = []
-t.send_alert = lambda c, text, d=False: sent.append(text)
+silent = []
+def fake_send(c, text, d=False, silent_=False, **kw):
+    t.alerts_sent += 1
+    sent.append(text)
+    silent.append(kw.get("silent", silent_))
+t.send_alert = fake_send
 
 # ---------- news ----------
 def rss(titles, when=None):
@@ -226,6 +231,22 @@ got = t.refresh_roster(cfg, rdb, True, False)                  # Sanju leaves th
 assert "Sanju Samson" not in {p["name"] for p in got}, "still kept via the old season's match squads"
 assert sent and "Removed: Sanju Samson" in sent[0], sent
 print("roster: team page + IPL season squads OK (30 players; released players drop off)")
+
+# Quiet check-in: one silent "no new updates" message per 3 quiet hours, never after a run that sent alerts.
+qdb, sent[:], silent[:] = t.db_connect(os.path.join(tmp, "quiet.db")), [], []
+t0, H = 1790630000.0, 3600
+t.quiet_check_in(cfg, qdb, t0, t.alerts_sent, True)                   # first run: only starts the clock
+t.quiet_check_in(cfg, qdb, t0 + 2 * H, t.alerts_sent, True)           # 2 quiet hours: nothing yet
+assert sent == []
+t.quiet_check_in(cfg, qdb, t0 + 3 * H, t.alerts_sent, True)           # 3 quiet hours: one silent message
+assert len(sent) == 1 and silent == [True] and sent[0].startswith("✅ No new updates since 29 Sep 02:43 IST"), sent
+before = t.alerts_sent; t.send_alert(cfg, "real alert", True)         # a real alert restarts the clock
+t.quiet_check_in(cfg, qdb, t0 + 5 * H, before, True)
+t.quiet_check_in(cfg, qdb, t0 + 7 * H, t.alerts_sent, True)           # only 2 quiet hours since that alert
+assert len(sent) == 2, sent
+t.quiet_check_in(cfg, qdb, t0 + 8 * H, t.alerts_sent, True)
+assert len(sent) == 3 and silent[-1], sent
+print("quiet check-in OK (silent, every 3 quiet hours)")
 
 t.write_dashboard(roster, hits, latest, db, os.path.join(tmp, "dashboard.html"))
 print("dashboard written", os.path.getsize(os.path.join(tmp, "dashboard.html")), "bytes")

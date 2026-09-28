@@ -20,6 +20,7 @@ player news about every 20 min and the roster once a day (last-run times are kep
 
 ## 4. Customise (`config.json`)
 - `muted_players`: names to ignore   - `alert.min_importance`: minor / important / breaking
+- `alert.quiet_update_hours`: after this many hours with no alerts, send one silent "No new updates" message (default 3)
 - `intervals_seconds`: polling speed  - `team_queries`, `extra_rss_feeds`: news sources
 - `roster`: fallback squad (Cricbuzz profile ids). The live squad is refreshed daily from Cricbuzz's CSK team page
   plus every CSK player in the latest started IPL season's match squads (the team page misses some, e.g. Aman Khan

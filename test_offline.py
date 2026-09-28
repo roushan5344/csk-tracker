@@ -84,7 +84,12 @@ for h, want in [
         ("England Call Up Hat-Trick Hero Henry Crocombe For Sri Lanka ODI Series", []),
         ("Ex-India Fast Bowler Zaheer Khan Appointed Chennai Super Kings Head Coach For IPL 2027", ["CSK"]),
         ("WATCH: Matt Short’s Jaw-Dropping One-Handed Catch To Dismiss Marnus Labuschagne", ["Matthew Short"]),
-        ("Ellis, Davies ruled out to further deplete Aussies - cricket.com.au", ["Nathan Ellis"])]:
+        ("Ellis, Davies ruled out to further deplete Aussies - cricket.com.au", ["Nathan Ellis"]),
+        # a first name alone counts only in a cricket headline (surname anywhere, or a cricket word)
+        ("\"He Was The Perfect Pro Wrestler\": Matt Cardona Mourns PAC’s Death At 40 With Emotional WWE Throwback", []),
+        ("England twins Jamie and Craig Overton will play Big Bash League alongside each other this summer", ["Jamie Overton"]),
+        ("UPT20 2026: Prashant Veers all round show, Kartik Siddhus hat-trick help Noida Kings beat Kashi Rudras",
+         ["Prashant Veer"])]:
     assert t.tag_item(h, names, set()) == want, (h, t.tag_item(h, names, set()))
 # "appointment" is breaking only for a CSK / coach / captain appointment
 assert t.classify("Mohammad Yousuf names MS Dhoni appointment as decisive moment in Indian cricket's rise")[0] == "minor"

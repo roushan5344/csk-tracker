@@ -32,6 +32,11 @@ CLICKBAIT = r"you won't believe|shocking|viral|goes wild|breaks the internet|net
 NOT_ARTICLE = (r" - (squads|match info|live scores?|scorecard|(full )?commentary|points table|schedule|results)\b"
                r"|\b(live (full )?scorecard|full scorecard|live (cricket )?scores?|match info|points table|squad ipl \d{4})\b")
 ALIASES = {"MS Dhoni": ["Thala", "Mahi"]}     # nicknames headlines use on their own
+# Words that make a headline about cricket; needed before a first name alone counts as a CSK player.
+CRICKET = (r"\b(cricket\w*|ipl|csk|odis?|\w*t20\w*|tests?|wickets?|centur(y|ies)|fifty|fifties|innings|bat(ter|sman|smen|ting)s?"
+           r"|bowl(s|ed|er|ers|ing)?|spinn?(er|ers)|pacers?|seamers?|all[- ]?round\w*|squads?|playing xi|bcci|icc|ranji|duleep"
+           r"|vijay hazare|super kings|world cup|sa20|ilt20|bbl|cpl|big bash|the hundred|asia cup|asian games|league|hat-trick"
+           r"|runs|sixes|stumps|catch|skipper|captain\w*|kings|royals|titans|capitals|knight riders|sunrisers|nets|debut)\b")
 # Injury or availability news, used to flag players in match alerts (never to remove them).
 INJURY = (r"\b(injur\w*|ruled out|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|withdr[ae]w\w*"
           r"|miss(es|ed)? (the )?(rest|remainder|series|match|game|tour)|out of the|doubt\w*|limp\w* off|goes down"
@@ -185,7 +190,10 @@ def short_name(t, parts):
         prev = re.search(r"([A-Z][a-z]+)\s+$", t[:m.start()])
         if (title_case or not prev or same_name(prev.group(1), parts[-2])) and not someone_else(t, m, parts):
             return m
-    if len(first) >= 3 and not first.isupper():                 # skip initials like "MS"
+    # A first name alone ("Ruturaj's gain", "Noor, Naib out") counts only in a cricket headline: one that also has
+    # the surname anywhere ("Jamie and Craig Overton") or a cricket word. Keeps out "Matt Cardona mourns PAC's death".
+    cricket = re.search(rf"\b{re.escape(last)}", t, re.I) or re.search(CRICKET, t, re.I)
+    if len(first) >= 3 and not first.isupper() and cricket:    # skip initials like "MS"
         for m in re.finditer(rf"\b{re.escape(first)}\b", t):
             nxt = re.match(r"\s+([A-Z][a-z]+)", t[m.end():])
             if (title_case or not nxt or same_name(nxt.group(1), last)) and not someone_else(t, m, parts):

@@ -22,15 +22,18 @@ BREAKING = (r"\b(retire[sd]?|retirement|ruled out|steps? down|sacked|released|re
             r"|(new|named|as) (captain|skipper|vice-captain)|ban|banned|suspended|suspension|replacement|joins (csk|chennai)"
             r"|appointment|(as|new|head)\s([\w ]{0,25}\s)?coach(es)?)\b")    # "as Chennai Super Kings coach"
 IMPORTANT = (r"\b(injur\w*|fitness|strain|niggle|side issue|hamstring|scans?|surgery|return\w*|comeback|back from|selected"
+             r"|goes down|went down|limp\w* off|left the field|leaves the field|retired hurt|concussion|withdr[ae]w\w*"
              r"|squad|dropped|named|playing xi|doubt\w*|contract|auction|trade|captain\w*|interview|milestone|record"
              r"|century|hundred|ton|fifty|half-century|five-for|fifer|four-for|\d-fer)\b")
 RUMOUR = r"\b(reportedly|rumou?rs?|speculat\w*|sources say|likely to|set to|could|may|might|claims? that|unconfirmed|tipped)\b"
 CLICKBAIT = r"you won't believe|shocking|viral|goes wild|breaks the internet|netizens|\bmemes?\b|jaw-dropping|watch:"
 # Cricbuzz match/team pages that Google News lists as if they were stories.
 NOT_ARTICLE = r" - (squads|match info|live scores?|scorecard|(full )?commentary|points table|schedule|results)\b"
-# Surnames too common (or too word-like) to trust on their own: "Kuldeep Yadav" is not Kuldip Yadav, "Inshorts" is not Short.
-AMBIGUOUS_SURNAMES = {"ahmad", "ahmed", "chahar", "choudhary", "ellis", "ghosh", "gopal", "henry", "johnson", "khan",
-                      "kumar", "patel", "sharma", "short", "singh", "veer", "yadav"}
+ALIASES = {"MS Dhoni": ["Thala", "Mahi"]}     # nicknames headlines use on their own
+# Injury or availability news, used to flag players in match alerts (never to remove them).
+INJURY = (r"\b(injur\w*|ruled out|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|withdr[ae]w\w*"
+          r"|miss(es|ed)? (the )?(rest|remainder|series|match|game|tour)|out of the|doubt\w*|limp\w* off|goes down"
+          r"|went down|left the field|leaves the field|retired hurt|concussion|sore|stiff\w*|unavailable|fitness)\b")
 # Headlines where a tracked player is only a yardstick for someone else ("Gill joins MS Dhoni in elite list").
 # {s} is the player's surname, lower case.
 PASSING = [r"\b(joins|equals?|equalled|breaks?|broke|surpass\w*|overtak\w*|goes past|went past|levels? with|eclips\w*"
@@ -92,6 +95,8 @@ def json_objects(text, key):
 def db_connect(path=None):
     db = sqlite3.connect(path or os.path.join(HERE, "state.db"))
     db.execute("create table if not exists seen(key text primary key, title text, ts real)")
+    if "pub" not in [c[1] for c in db.execute("pragma table_info(seen)")]:     # publish time, added later
+        db.execute("alter table seen add column pub real")
     db.execute("create table if not exists squad(id text primary key, name text)")
     db.execute("create table if not exists kv(k text primary key, v text)")
     db.execute("create table if not exists match_squads(match_id text primary key, ts real, state text, players text)")
@@ -160,19 +165,39 @@ def classify(title):
         imp = "important"   # unverified claims never rank as breaking
     return imp, rumour
 
+def same_name(a, b):
+    a, b = a.lower(), b.lower()
+    return a.startswith(b) or b.startswith(a)                   # "Zak" for "Zakary", "Matt" for "Matthew"
+
+def short_name(t, parts):
+    """Match a player by one name alone: surname ("Ellis, Davies ruled out") or first name ("Ruturaj's gain").
+    Missing a story is worse than a wrong tag, so any capitalised match counts, unless the headline is in sentence
+    case and a different name sits right next to it: "Kuldeep Yadav" is not Kuldip Yadav, "Shreyas Iyer" is not
+    Shreyas Gopal. (In Title Case headlines every word is capitalised, so that check can't be made.)"""
+    small = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "vs", "v", "with"}
+    head = re.sub(r"\s[-|]\s[^-|]+$", "", t)                   # publisher suffix is always capitalised
+    title_case = sum(w[0].islower() and w not in small for w in re.findall(r"[A-Za-z][\w']*", head)) <= 1
+    first, last = parts[0], parts[-1]
+    for m in re.finditer(rf"\b{re.escape(last)}\b", t):
+        prev = re.search(r"([A-Z][a-z]+)\s+$", t[:m.start()])
+        if title_case or not prev or same_name(prev.group(1), parts[-2]):
+            return m
+    if len(first) >= 3 and not first.isupper():                 # skip initials like "MS"
+        for m in re.finditer(rf"\b{re.escape(first)}\b", t):
+            nxt = re.match(r"\s+([A-Z][a-z]+)", t[m.end():])
+            if title_case or not nxt or same_name(nxt.group(1), last):
+                return m
+    return None
+
 def mention(title, name):
     """'about' if the headline is about this player, 'passing' if he is only a yardstick for someone else, else None."""
     t = title.replace("’", "'")
     parts = name.split()
     found = re.search(rf"\b{re.escape(name)}\b", t, re.I)
-    if not found and len(parts) > 1 and parts[-1].lower() not in AMBIGUOUS_SURNAMES:
-        # Surname alone ("Brevis dropped"): must be capitalised and not preceded by another first name ("Craig Overton").
-        for m in re.finditer(rf"\b{re.escape(parts[-1])}\b", t):
-            prev = re.search(r"([A-Z][a-z]+)\s+$", t[:m.start()])
-            first, other = parts[-2].lower(), prev.group(1).lower() if prev else ""
-            if not prev or first.startswith(other) or other.startswith(first):     # "Zak" for "Zakary"
-                found = m
-                break
+    if not found and len(parts) > 1:
+        found = short_name(t, parts)
+    if not found:
+        found = next((re.search(rf"\b{a}\b", t) for a in ALIASES.get(name, []) if re.search(rf"\b{a}\b", t)), None)
     if not found:
         return None
     s = re.escape(parts[-1].lower())
@@ -201,9 +226,10 @@ def is_duplicate(db, title):
             return True
     return False
 
-def mark_seen(db, title):
+def mark_seen(db, title, when=None):
     key = hashlib.sha1(norm(title).encode()).hexdigest()
-    db.execute("insert or ignore into seen values(?,?,?)", (key, title, time.time()))
+    db.execute("insert or ignore into seen(key, title, ts, pub) values(?,?,?,?)",
+               (key, title, time.time(), when.timestamp() if when else None))
     db.commit()
 
 def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
@@ -220,7 +246,7 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
         if c is None or is_duplicate(db, it["title"]):
             continue
         imp, rumour = c[0], c[1] and not it.get("official")
-        mark_seen(db, it["title"])
+        mark_seen(db, it["title"], it["when"])
         latest.append({**it, "tags": tags, "importance": imp, "rumour": rumour})
         if first_run:                       # don't spam old stories on first start
             continue
@@ -457,7 +483,8 @@ def describe(h, now=None):
         if role == "bench": return "off", "Match live, on the bench"
         return "live", f"LIVE, in squad, XI not published (started {ist(m['start'])})"
     if m["phase"] == "upcoming" and m["start"]:
-        return "soon", f"PLAYING {day_label(m['start'], now)}, starts {ist(m['start'])}, {ROLE_TEXT[role]}"
+        return "soon", (f"PLAYING {day_label(m['start'], now)}, starts {ist(m['start'])}, {ROLE_TEXT[role]}"
+                        + (" ⚠️ injury news" if h.get("injury") else ""))
     if m["phase"] == "paused":
         return "off", f"{m['state']}: {m['status']}"
     return "off", f"Cricbuzz state '{m['state']}': {m['status']}"
@@ -467,9 +494,21 @@ def match_block(hs):
     m = hs[0]["match"]
     when = {"live": "LIVE now", "paused": m["state"]}.get(m["phase"], f"starts {m['start']:%H:%M} IST")
     lines = [f"• {m['teams'][0][0]} vs {m['teams'][1][0]} · {m['format'] or '?'} · {when}"]
-    lines += [f"   {h['player']} ({h['team']}, {ROLE_TEXT[h['role']]})" for h in hs]
+    for h in hs:
+        lines.append(f"   {h['player']} ({h['team']}, {ROLE_TEXT[h['role']]})")
+        lines += [f"      ⚠️ injury news: “{title}” ({day})" for title, day in h.get("injury", [])]
     lines.append(f"   {m['desc']}, {m['series']}\n   {m['url']}")
     return "\n".join(lines)
+
+def injury_news(db, player, days=4):
+    """Recent headlines naming this player with injury or availability words, newest first (at most 2).
+    Shown next to the player in match alerts so you can judge; he is never dropped because of them."""
+    out = []
+    for title, ts in db.execute("select title, coalesce(pub, ts) t from seen where t >= ? order by t desc",
+                                (time.time() - days * 86400,)):
+        if re.search(INJURY, title, re.I) and mention(title, player):
+            out.append((re.sub(r"\s[-|]\s[^-|]+$", "", title), datetime.fromtimestamp(ts, IST).strftime("%d %b")))
+    return out[:2]
 
 def match_day(m, now):
     return "TODAY" if m["phase"] in ("live", "paused") else day_label(m["start"], now)   # a Test on day 3 is today's
@@ -515,6 +554,9 @@ def check_matches(cfg, db, roster, dry_run):
             except Exception as e:
                 print(f"[warn] squads for {m['title']} failed: {e}", file=sys.stderr)
     hits = players_in_matches(list(matches.values()), roster, squads)
+    for h in hits:                          # before the XI is out, flag recent injury news (the XI itself is definitive)
+        if h["role"] in ("squad", "expected"):
+            h["injury"] = injury_news(db, h["player"])
     kv = lambda k: db.execute("select 1 from kv where k=?", (k,)).fetchone()
     mark = lambda k: db.execute("insert or replace into kv values(?,?)", (k, "1"))
 

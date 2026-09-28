@@ -37,6 +37,12 @@ KEEP = {
         ("important", ["Ruturaj Gaikwad"]),
     "Moeen Ali Reveals Why MS Dhoni and Stephen Fleming Made CSK the “Dream Combo” - IceCric News":
         ("minor", ["CSK", "MS Dhoni"]),
+    # short names alone (27-28 Sep 2026): missing these is worse than the odd wrong tag
+    "Ellis, Davies ruled out to further deplete Aussies - cricket.com.au": ("breaking", ["Nathan Ellis"]),
+    "Ellis goes down as Aussies fall under another spin spell": ("important", ["Nathan Ellis"]),
+    "3rd T20I: Noor, Naib out as Afghanistan elect to bowl against India, Thakur replaces Arshdeep": ("minor", ["Noor Ahmad"]),
+    "Iyer's absence, Ruturaj's gain: CSK skipper cashing in on WI ODIs could boost India's middle-order resources":
+        ("minor", ["CSK", "Ruturaj Gaikwad"]),
 }
 DROP = [
     "chennai super kings - Cricbuzz",                                               # team page, not news
@@ -50,6 +56,7 @@ DROP = [
     "Virat Kohli Rapid Fire: Rohit, Dhoni, Bumrah, Steyn Named - TechnoSports Media Group",
     "\"He Will Always Be My Captain\": Virat Kohli Shares His Feelings Towards MS Dhoni - Sportscape Magazine",
     "Rhythm, control and a Kuldeep Yadav masterclass - Cricbuzz",                   # not Kuldip Yadav
+    "Shashi Tharoor praises Kuldeep Yadav’s four-wicket spell vs West Indies - The News Mill",   # nor this
     "Who have scored the most ODI centuries while batting at no. 5 or lower? | Miller recorded career-best score of 142 vs Aus | Inshorts - Inshorts",
     "SHOCKING: Dhoni viral video breaks the internet",
     "Unrelated news about football",
@@ -214,7 +221,12 @@ EARLY = (600001, 700001, "Caribbean Premier League 2026", "League", "20th Match"
 LATER = (600002, 700002, "Afghanistan tour of Bangladesh", "International", "1st T20I", "T20", ms(2026, 9, 30, 18, 0),
          "Bangladesh/BAN", "Afghanistan/AFG")                                                            # made up
 FAR = (600003, 700003, "Future series", "International", "1st ODI", "ODI", ms(2026, 10, 3, 9, 0), "India/IND", "England/ENG")
-SCHEDULE = [sched_page(WI_ODI2, EARLY, FAR)]
+AUS_ODI3 = (147909, 11595, "Australia tour of South Africa, 2026", "International", "3rd ODI", "ODI", ms(2026, 9, 30, 17, 0),
+            "South Africa/RSA", "Australia/AUS")                   # real; Ellis hurt his side in the 2nd ODI
+SCHEDULE = [sched_page(WI_ODI2, AUS_ODI3, EARLY, FAR)]
+SERIES_11595 = next_page(
+    {"matchInfo": {**info(147898, "Australia tour of South Africa, 2026", "2nd ODI", "ODI", 1790496000000, "complete", "",
+                          "South Africa/RSA", "Australia/AUS")["matchInfo"], "seriesId": 11595}})
 SERIES_11902 = next_page(   # the series' match list: 1st ODI done, 2nd ODI to come
     {"matchInfo": {**info(151532, "West Indies tour of India, 2026", "1st ODI", "ODI", 1790497800000, "complete", "",
                           "West Indies/WI", "India/IND")["matchInfo"], "seriesId": 11902}},
@@ -222,11 +234,13 @@ SERIES_11902 = next_page(   # the series' match list: 1st ODI done, 2nd ODI to c
                           "India/IND", "West Indies/WI")["matchInfo"], "seriesId": 11902}})
 SQUAD_PAGES.update({"600001": next_page(squads("GAW", "Squad", [(8435, "Akeal Hosein")])),
                     "600002": next_page(squads("AFG", "Squad", [(15452, "Noor Ahmad")])),
-                    "600003": next_page(squads("IND", "Squad", [(11813, "Ruturaj Gaikwad")]))})
+                    "600003": next_page(squads("IND", "Squad", [(11813, "Ruturaj Gaikwad")])),
+                    "147898": next_page(squads("AUS", "playing XI", [(15480, "Nathan Ellis")]))})   # real: in the 2nd ODI XI
 def match_get(url, timeout=20):
     if url == cfg["live_scores_url"]: return LIVE_PAGE
     if url == cfg["schedule_url"]: return SCHEDULE[0]
     if "/cricket-series/11902/" in url: return SERIES_11902
+    if "/cricket-series/11595/" in url: return SERIES_11595
     return SQUAD_PAGES.get(url.rsplit("/", 1)[1], "")             # 151543: no squad yet
 t.http_get = match_get
 real_now, NOW = t.datetime, [NIGHT]
@@ -247,6 +261,8 @@ assert sent[1].startswith("📅 NEW MATCH FOR CSK PLAYERS\n\nTODAY (Tue 29 Sep)\
 assert "Kamboj" not in sent[1] and "TOMORROW" not in sent[1]
 
 NOW[0] = datetime(2026, 9, 29, 8, 5, tzinfo=t.IST)            # morning digest: today + tomorrow
+t.mark_seen(mdb, "Ellis, Davies ruled out to further deplete Aussies - cricket.com.au",    # real, 28 Sep
+            datetime.now(t.IST).replace(hour=12) - timedelta(days=1))                     # published yesterday
 t.check_matches(cfg, mdb, roster, True)
 digest = sent[2]
 assert digest.startswith("📅 CSK PLAYERS' MATCHES\n\nTODAY (Tue 29 Sep)\n"), digest
@@ -254,7 +270,10 @@ for part in ["Dewald Brevis (Paarl Royals, playing XI)", "LIVE now",            
              "Ayush Mhatre (India U19, playing XI)", "Stumps",                        # Test between days: still today
              "• India A vs Australia A · TEST · starts 09:30 IST\n   Anshul Kamboj (India A, in squad)",
              "TOMORROW (Wed 30 Sep)\n• India vs West Indies · ODI · starts 14:00 IST\n"
-             "   Ruturaj Gaikwad (India, expected, squad not out yet)\n   2nd ODI, West Indies tour of India, 2026"]:
+             "   Ruturaj Gaikwad (India, expected, squad not out yet)\n   2nd ODI, West Indies tour of India, 2026",
+             # injury news is shown next to the player, who stays listed
+             "• South Africa vs Australia · ODI · starts 17:00 IST\n   Nathan Ellis (Australia, expected, squad not out yet)\n"
+             "      ⚠️ injury news: “Ellis, Davies ruled out to further deplete Aussies” ("]:
     assert part in digest, (part, digest)
 assert "Sanju" not in digest and "England" not in digest and "Guyana" not in digest   # unknown state, 3 days out, started
 assert digest.index("TODAY") < digest.index("TOMORROW")

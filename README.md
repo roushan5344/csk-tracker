@@ -22,6 +22,9 @@ player news about every 20 min and the roster once a day (last-run times are kep
 - `muted_players`: names to ignore   - `alert.min_importance`: minor / important / breaking
 - `alert.quiet_update_hours`: after this many hours with no alerts, send one silent "No new updates" message (default 3)
 - `intervals_seconds`: polling speed  - `team_queries`, `extra_rss_feeds`: news sources
+- `news_search_urls`: news search engines run for every query (Google News and Bing News; `{q}` is the query)
+- `official_feeds`: feeds whose every post is about CSK (CSK's YouTube channel), tagged "CSK (official)".
+  X/Twitter and Instagram have no free feed; their posts arrive once news sites report them.
 - `roster`: fallback squad (Cricbuzz profile ids). The live squad is refreshed daily from Cricbuzz's CSK team page
   plus every CSK player in the latest started IPL season's match squads (the team page misses some, e.g. Aman Khan
   and replacement signings). Someone who drops off the team page is treated as released. A player released at

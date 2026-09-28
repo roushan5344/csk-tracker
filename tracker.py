@@ -19,7 +19,8 @@ UA = "Mozilla/5.0 (compatible; CSKTracker/1.0)"
 RANKS = {"minor": 0, "important": 1, "breaking": 2}
 
 BREAKING = (r"\b(retire[sd]?|retirement|ruled out|steps? down|sacked|released|retained|traded|signs|signed|appointed"
-            r"|(new|named|as) (captain|skipper|vice-captain)|ban|banned|suspended|suspension|replacement|joins (csk|chennai))\b")
+            r"|(new|named|as) (captain|skipper|vice-captain)|ban|banned|suspended|suspension|replacement|joins (csk|chennai)"
+            r"|appointment|(as|new|head)\s([\w ]{0,25}\s)?coach(es)?)\b")    # "as Chennai Super Kings coach"
 IMPORTANT = (r"\b(injur\w*|fitness|strain|niggle|side issue|hamstring|scans?|surgery|return\w*|comeback|back from|selected"
              r"|squad|dropped|named|playing xi|doubt\w*|contract|auction|trade|captain\w*|interview|milestone|record"
              r"|century|hundred|ton|fifty|half-century|five-for|fifer|four-for|\d-fer)\b")
@@ -64,6 +65,7 @@ def norm(s):
 
 def tokens(s):
     s = re.sub(r"\s[-|]\s[^-|]+$", "", s)          # drop " - Publisher" suffix
+    s = re.sub(r"#\w+", "", s)                      # hashtags (#WhistlePodu) are on every official post
     return set(w[:5] for w in norm(s).split() if len(w) > 2)   # crude stemming
 
 def ist(dt):
@@ -118,18 +120,26 @@ def send_alert(cfg, text, dry_run=False, silent=False):
 
 # ---------- news ----------
 def parse_rss(xml_text):
+    """RSS <item>s (Google News, Bing, publishers) and Atom <entry>s (YouTube channel feeds)."""
     items = []
-    root = ET.fromstring(xml_text)
-    for it in root.iter("item"):
-        title = html.unescape((it.findtext("title") or "").strip())
-        link = (it.findtext("link") or "").strip()
-        src = it.findtext("source") or ""
-        pub = it.findtext("pubDate")
+    for it in ET.fromstring(xml_text).iter():
+        if it.tag.rsplit("}", 1)[-1] not in ("item", "entry"):
+            continue
+        kids = {}                           # child name without namespace ("News:Source" -> "Source") -> element
+        for c in it:
+            kids.setdefault(c.tag.rsplit("}", 1)[-1].lower(), c)
+        text = lambda k: (kids[k].text or "").strip() if k in kids else ""
+        title = html.unescape(text("title"))
+        link = text("link") or (kids["link"].get("href", "") if "link" in kids else "")
+        if "bing.com/news/apiclick" in link:            # Bing wraps the article URL in a redirect
+            link = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("url", [link])[0]
+        src = text("source")
+        pub = text("pubdate") or text("published")
         try:
-            when = parsedate_to_datetime(pub).astimezone(IST) if pub else None
+            when = (parsedate_to_datetime(pub) if "," in pub else datetime.fromisoformat(pub)).astimezone(IST) if pub else None
         except Exception:
             when = None
-        desc = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", it.findtext("description") or ""))).strip()
+        desc = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text("description")))).strip()
         items.append({"title": title, "link": link, "source": src, "when": when, "summary": one_line(desc, title, src)})
     return items
 
@@ -140,9 +150,6 @@ def one_line(desc, title, src):
     s = re.split(r"(?<=[.!?])\s", desc)[0]
     return s if len(s) <= 180 else s[:177].rsplit(" ", 1)[0] + "…"
 
-def google_news_url(query):
-    q = urllib.parse.quote_plus(query + " when:2d")
-    return f"https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en"
 
 def classify(title):
     t = title.lower()
@@ -206,12 +213,14 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
         if (it["when"] and it["when"] < oldest) or not is_article(it["title"]):
             continue
         tags = tag_item(it["title"], roster_names, set(cfg["muted_players"]))
+        if it.get("official"):              # the team's own post: always relevant, never a rumour
+            tags = [it["official"]] + [x for x in tags if x != "CSK"]
         if not tags:
             continue
         c = classify(it["title"])
         if c is None or is_duplicate(db, it["title"]):
             continue
-        imp, rumour = c
+        imp, rumour = c[0], c[1] and not it.get("official")
         mark_seen(db, it["title"])
         latest.append({**it, "tags": tags, "importance": imp, "rumour": rumour})
         if first_run:                       # don't spam old stories on first start
@@ -229,16 +238,23 @@ def fetch_news(cfg, roster_names, include_players):
     if include_players:
         queries += [f"{n} cricket" for n in roster_names if n not in cfg["muted_players"]]
     items = []
-    for q in queries:
-        try:
-            items += parse_rss(http_get(google_news_url(q)))
-        except Exception as e:
-            print(f"[warn] news query '{q}' failed: {e}", file=sys.stderr)
+    for q in queries:                       # every search engine in news_search_urls (Google News, Bing News)
+        for template in cfg["news_search_urls"]:
+            url = template.format(q=urllib.parse.quote_plus(q))
+            try:
+                items += parse_rss(http_get(url))
+            except Exception as e:
+                print(f"[warn] news search '{q}' ({urllib.parse.urlparse(url).netloc}) failed: {e}", file=sys.stderr)
     for url in cfg["extra_rss_feeds"]:
         try:
             items += parse_rss(http_get(url))
         except Exception as e:
             print(f"[warn] feed {url} failed: {e}", file=sys.stderr)
+    for feed in cfg.get("official_feeds", []):  # e.g. CSK's YouTube channel: every post is about CSK
+        try:
+            items += [{**it, "official": feed["tag"]} for it in parse_rss(http_get(feed["url"]))]
+        except Exception as e:
+            print(f"[warn] official feed {feed['url']} failed: {e}", file=sys.stderr)
     return items
 
 # ---------- roster ----------

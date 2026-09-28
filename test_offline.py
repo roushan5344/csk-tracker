@@ -93,6 +93,41 @@ assert items[0]["summary"].startswith("In a dramatic turn of events") and len(it
 assert "Set to clash" not in items[0]["summary"] and items[1]["summary"] == ""
 print("summaries OK")
 
+# Bing News (real item, 26 Sep 2026): redirect link unwrapped, publisher from <News:Source>, summary kept.
+now_rfc = format_datetime(datetime.now(t.IST))
+BING = ('<rss xmlns:News="https://www.bing.com/news/search?q=Chennai+Super+Kings&amp;format=rss" version="2.0"><channel>'
+        '<item><title>Different challenge: Big shoes for Zaheer Khan to fill as Chennai Super Kings coach</title>'
+        '<link>http://www.bing.com/news/apiclick.aspx?ref=FexRss&amp;aid=&amp;tid=6abadf&amp;url=https%3a%2f%2fwww.telegraphindia.com'
+        '%2fsports%2fcricket%2fdifferent-challenge-big-shoes-for-zaheer-khan-to-fill-as-chennai-super-kings-coach-prnt%2fcid%2f2181766'
+        '&amp;c=964&amp;mkt=en-in</link><description>There were several names doing the rounds as probable replacements once '
+        'Fleming left the job after IPL 2026, but Zaheer got the nod after former captain Dhoni agreed to his choice ...'
+        f'</description><pubDate>{now_rfc}</pubDate><News:Source>Telegraph India</News:Source></item></channel></rss>')
+b = t.parse_rss(BING)[0]
+assert b["link"].startswith("https://www.telegraphindia.com/sports/cricket/different-challenge"), b["link"]
+assert b["source"] == "Telegraph India" and b["summary"].startswith("There were several names"), b
+
+# CSK's official YouTube channel (Atom feed, real titles): tagged "CSK (official)", never a rumour.
+def entry(title, vid):
+    return (f'<entry><title>{title}</title><link rel="alternate" href="https://www.youtube.com/watch?v={vid}"/>'
+            f'<published>{datetime.now(t.IST).isoformat()}</published></entry>')
+YT = ('<feed xmlns="http://www.w3.org/2005/Atom"><title>Chennai Super Kings</title>'
+      + entry("Hitting the Right Areas with Jamie Overton \U0001f981 | Lion in Focus | CSK", "bOYRjyFr3J8")
+      + entry("Mood for today ✨\U0001f90c   #WhistlePodu #Yellove", "KUFQ6inp_LM")
+      + entry("Looks familiar \U0001f914 Think inside out, Superfans! #WhistlePodu #Yellove", "zNeCNiXm6pI") + "</feed>")
+yt = [{**i, "official": "CSK (official)"} for i in t.parse_rss(YT)]
+assert yt[0]["link"] == "https://www.youtube.com/watch?v=bOYRjyFr3J8" and yt[0]["when"]
+
+GOOGLE_COPY = t.parse_rss(rss(["Different challenge: Big shoes for Zaheer Khan to fill as Chennai Super Kings coach - Telegraph India"]))
+latest3, sent[:] = [], []
+t.process_items(cfg, db, [b] + GOOGLE_COPY + yt, names, True, latest3, first_run=False)
+assert [(i["tags"], i["rumour"]) for i in latest3] == [
+    (["CSK"], False), (["CSK (official)", "Jamie Overton"], False), (["CSK (official)"], False), (["CSK (official)"], False)
+], [(i["title"], i["tags"]) for i in latest3]          # the Google copy of the Bing story is a duplicate
+assert "https://www.telegraphindia.com/" in sent[0] and "Telegraph India" in sent[0]
+assert latest3[0]["importance"] == "breaking"                        # new head coach
+assert t.classify("Proteas coach questions Dewald Brevis’ suitability")[0] == "minor"
+print("Bing News + official YouTube OK")
+
 # ---------- roster ----------
 ROSTER_PAGE = ('<a href="/profiles/265/ms-dhoni" title="MS Dhoni"><div>x</div></a>'
                '<a href="/profiles/24391/zakary-foulkes" title="Zakary Foulkes"><div>x</div></a>'

@@ -13,6 +13,13 @@
     "roster": 86400
   },
   "team_queries": ["Chennai Super Kings", "CSK IPL", "MS Dhoni"],
+  "news_search_urls": [
+    "https://news.google.com/rss/search?q={q}+when%3A2d&hl=en-IN&gl=IN&ceid=IN:en",
+    "https://www.bing.com/news/search?q={q}&format=rss&qft=sortbydate%3d%221%22&mkt=en-IN"
+  ],
+  "official_feeds": [
+    {"tag": "CSK (official)", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC2J_VKrAzOEJuQvFFtj3KUw"}
+  ],
   "extra_rss_feeds": [
     "https://www.espncricinfo.com/rss/content/story/feeds/0.xml",
     "https://timesofindia.indiatimes.com/rssfeeds/54829575.cms"

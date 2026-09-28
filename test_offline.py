@@ -190,30 +190,88 @@ hits = t.players_in_matches(list(matches.values()), roster, sq)
 by = {(h["player"], h["match"]["id"]): h for h in hits}
 assert set(by) == {("Ruturaj Gaikwad", "151532"), ("Anshul Kamboj", "155422"), ("Ayush Mhatre", "155499"),
                    ("Dewald Brevis", "900001"), ("Noor Ahmad", "900001"), ("Sanju Samson", "900002")}, set(by)
-now_playing = {h["player"] for h in hits if t.describe(h)[1].startswith("PLAYING NOW")}
+NIGHT = datetime(2026, 9, 29, 1, 44, tzinfo=t.IST)
+now_playing = {h["player"] for h in hits if t.describe(h, NIGHT)[1].startswith("PLAYING NOW")}
 assert now_playing == {"Dewald Brevis"}, now_playing          # finished, stumps, bench, unknown state: not playing now
-assert t.describe(by[("Anshul Kamboj", "155422")])[1] == "PLAYING TODAY, starts 29 Sep 09:30 IST, in squad"
+assert t.describe(by[("Anshul Kamboj", "155422")], NIGHT)[1] == "PLAYING TODAY, starts 29 Sep 09:30 IST, in squad"
 k = by[("Anshul Kamboj", "155422")]
 assert (k["team"], k["opponent"], k["match"]["format"]) == ("India A", "Australia A", "TEST")
 print("match states, IST times and squad mapping OK")
 
-# check_matches end to end with fake HTTP, pretending it is 29 Sep 2026 01:44 IST
-real_now, sent[:] = t.datetime, []
+# ---------- schedule, TODAY/TOMORROW, expected squads, morning digest ----------
+ms = lambda *a: str(int(datetime(*a, tzinfo=t.IST).timestamp() * 1000))
+def sched_page(*entries):   # real structure of cricket-schedule/upcoming-series/all
+    return next_page({"matchScheduleMap": [{"scheduleAdWrapper": {"date": "TUE, SEP 29 2026", "matchScheduleList": [
+        {"seriesName": series, "seriesId": sid, "seriesCategory": cat, "matchInfo": [
+            {"matchId": mid, "seriesId": sid, "matchDesc": desc, "matchFormat": fmt, "startDate": start,
+             "team1": dict(zip(("teamName", "teamSName"), t1.split("/"))),
+             "team2": dict(zip(("teamName", "teamSName"), t2.split("/")))}]}
+        for mid, sid, series, cat, desc, fmt, start, t1, t2 in entries]}}]})
+WI_ODI2 = (151543, 11902, "West Indies tour of India, 2026", "International", "2nd ODI", "ODI", ms(2026, 9, 30, 14, 0),
+           "India/IND", "West Indies/WI")                          # real: squad not published yet on 29 Sep
+EARLY = (600001, 700001, "Caribbean Premier League 2026", "League", "20th Match", "T20", ms(2026, 9, 29, 6, 0),
+         "Guyana Amazon Warriors/GAW", "Trinbago Knight Riders/TKR")                                     # made up
+LATER = (600002, 700002, "Afghanistan tour of Bangladesh", "International", "1st T20I", "T20", ms(2026, 9, 30, 18, 0),
+         "Bangladesh/BAN", "Afghanistan/AFG")                                                            # made up
+FAR = (600003, 700003, "Future series", "International", "1st ODI", "ODI", ms(2026, 10, 3, 9, 0), "India/IND", "England/ENG")
+SCHEDULE = [sched_page(WI_ODI2, EARLY, FAR)]
+SERIES_11902 = next_page(   # the series' match list: 1st ODI done, 2nd ODI to come
+    {"matchInfo": {**info(151532, "West Indies tour of India, 2026", "1st ODI", "ODI", 1790497800000, "complete", "",
+                          "West Indies/WI", "India/IND")["matchInfo"], "seriesId": 11902}},
+    {"matchInfo": {**info(151543, "West Indies tour of India, 2026", "2nd ODI", "ODI", ms(2026, 9, 30, 14, 0), "Preview", "",
+                          "India/IND", "West Indies/WI")["matchInfo"], "seriesId": 11902}})
+SQUAD_PAGES.update({"600001": next_page(squads("GAW", "Squad", [(8435, "Akeal Hosein")])),
+                    "600002": next_page(squads("AFG", "Squad", [(15452, "Noor Ahmad")])),
+                    "600003": next_page(squads("IND", "Squad", [(11813, "Ruturaj Gaikwad")]))})
+def match_get(url, timeout=20):
+    if url == cfg["live_scores_url"]: return LIVE_PAGE
+    if url == cfg["schedule_url"]: return SCHEDULE[0]
+    if "/cricket-series/11902/" in url: return SERIES_11902
+    return SQUAD_PAGES.get(url.rsplit("/", 1)[1], "")             # 151543: no squad yet
+t.http_get = match_get
+real_now, NOW = t.datetime, [NIGHT]
 class FakeNow(datetime):
     @classmethod
-    def now(cls, tz=None): return datetime(2026, 9, 29, 1, 44, tzinfo=t.IST)
+    def now(cls, tz=None): return NOW[0]
 t.datetime = FakeNow
-t.http_get = lambda url, timeout=20: LIVE_PAGE if url == cfg["live_scores_url"] else SQUAD_PAGES[url.rsplit("/", 1)[1]]
-t.check_matches(cfg, db, roster, True)
-t.check_matches(cfg, db, roster, True)                        # second run: no repeat alerts
-t.datetime = real_now
+mdb = t.db_connect(os.path.join(tmp, "match.db"))
+sent[:], silent[:] = [], []
+t.check_matches(cfg, mdb, roster, True)                       # 01:44
+t.check_matches(cfg, mdb, roster, True)                       # 01:54: nothing repeats
 assert len(sent) == 2, sent
-assert sent[0].startswith("📅 PLAYING TODAY: Anshul Kamboj (India A, in squad)\nStarts 29 Sep 09:30 IST\n"
-                          "India A vs Australia A, 2nd unofficial Test · TEST\n"), sent[0]
-assert sent[1].startswith("🏏 PLAYING NOW: Dewald Brevis (Paarl Royals, playing XI)\nStarted 27 Sep 14:00 IST\n"
-                          "Paarl Royals vs MI Cape Town, 5th Match · T20\n"), sent[1]
-print("match alerts OK")
+assert sent[0].startswith("🏏 PLAYING NOW: Dewald Brevis (Paarl Royals, playing XI)\nStarted 27 Sep 14:00 IST\n"
+                          "Paarl Royals vs MI Cape Town, 5th Match · T20\n"), sent[0]
+# a match before the 8 AM digest is announced at once; 09:30 and tomorrow's wait for the digest
+assert sent[1].startswith("📅 NEW MATCH FOR CSK PLAYERS\n\nTODAY (Tue 29 Sep)\n• Guyana Amazon Warriors vs Trinbago "
+                          "Knight Riders · T20 · starts 06:00 IST\n   Akeal Hosein (Guyana Amazon Warriors, in squad)"), sent[1]
+assert "Kamboj" not in sent[1] and "TOMORROW" not in sent[1]
+
+NOW[0] = datetime(2026, 9, 29, 8, 5, tzinfo=t.IST)            # morning digest: today + tomorrow
+t.check_matches(cfg, mdb, roster, True)
+digest = sent[2]
+assert digest.startswith("📅 CSK PLAYERS' MATCHES\n\nTODAY (Tue 29 Sep)\n"), digest
+for part in ["Dewald Brevis (Paarl Royals, playing XI)", "LIVE now",                  # live match
+             "Ayush Mhatre (India U19, playing XI)", "Stumps",                        # Test between days: still today
+             "• India A vs Australia A · TEST · starts 09:30 IST\n   Anshul Kamboj (India A, in squad)",
+             "TOMORROW (Wed 30 Sep)\n• India vs West Indies · ODI · starts 14:00 IST\n"
+             "   Ruturaj Gaikwad (India, expected, squad not out yet)\n   2nd ODI, West Indies tour of India, 2026"]:
+    assert part in digest, (part, digest)
+assert "Sanju" not in digest and "England" not in digest and "Guyana" not in digest   # unknown state, 3 days out, started
+assert digest.index("TODAY") < digest.index("TOMORROW")
+
+NOW[0] = datetime(2026, 9, 29, 15, 0, tzinfo=t.IST)           # after the digest a new match turns up for tomorrow
+SCHEDULE[0] = sched_page(WI_ODI2, FAR, LATER)
+t.check_matches(cfg, mdb, roster, True)
+t.check_matches(cfg, mdb, roster, True)
+assert len(sent) == 4 and sent[3].startswith("📅 NEW MATCH FOR CSK PLAYERS\n\nTOMORROW (Wed 30 Sep)\n• Bangladesh vs "
+                                             "Afghanistan · T20 · starts 18:00 IST\n   Noor Ahmad (Afghanistan, in squad)"), sent[3]
 samples = list(sent)
+
+sent[:], silent[:] = [], []                                   # a quiet day: one silent digest line
+t.check_matches(cfg, t.db_connect(os.path.join(tmp, "quiet_day.db")), [], True)
+assert sent == ["📅 No CSK player has a match today or tomorrow."] and silent == [True], sent
+t.datetime = real_now
+print("match alerts OK: PLAYING NOW, morning digest (today + tomorrow), expected squads, new-match alerts")
 
 # Polling: last-run times are saved in state.db, so a second --once run (fresh process) skips roster and news.
 t.HERE, calls = tmp, []                                       # keep run_cycle's dashboard.html in the temp folder
@@ -228,7 +286,7 @@ first = len(calls)
 assert any("news.google.com" in u for u in calls) and cfg["roster_sources"][0] in calls
 calls.clear()
 t.run_cycle(cfg, pdb, {}, True, False)
-assert calls == [cfg["live_scores_url"]], calls              # squads are cached too
+assert calls == [cfg["live_scores_url"], cfg["schedule_url"]], calls   # squads are cached too
 print(f"polling OK: first run {first} requests, next run {len(calls)}")
 
 # Roster: Cricbuzz's CSK team page lists 24 players; Aman Khan and the replacement signings only appear in the

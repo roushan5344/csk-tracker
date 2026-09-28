@@ -31,11 +31,15 @@ player news about every 20 min and the roster once a day (last-run times are kep
   retention time who was never on the team page stays tracked until the next IPL season's first match.
 
 ## How match detection works
-The Cricbuzz live-scores page embeds each match's `state` (Preview / Upcoming / Toss / In Progress / Stumps /
-Complete / Abandon...) and start time. For every match that is live, paused (Stumps), or starts within 24 h, the
-tracker reads that match's Cricbuzz squad page and looks for CSK players by profile id, so it works for any
-national, A, U19 or league team. Before the toss it says "MATCH TODAY" (in squad); **PLAYING NOW** only appears when
-the match state is live and the player is in the playing XI (or in the squad if Cricbuzz hasn't published the XI yet).
+Matches come from Cricbuzz's schedule page (every international, domestic, T20 league and women's match for the
+next ~5 days) plus its live-scores page, which gives each match's `state` (Preview / In Progress / Stumps /
+Complete...). For every match today or tomorrow (IST dates), and every live one, the tracker reads the match's
+Cricbuzz squad page and looks for CSK players by profile id, so any team or league works. If a squad isn't published
+yet, it uses the previous match of the same series and marks the player "expected".
+- **Morning digest** (`alert.match_digest_hour`, default 8 AM IST): one message listing CSK players' matches TODAY and
+  TOMORROW: player, team, opponent, format, start time. A silent one-liner if there are none.
+- **NEW MATCH**: a match found after the digest (or one starting before it) is sent straight away, once.
+- **PLAYING NOW**: once per match, only when it is live and the player is in the XI (or squad, before the XI is out).
 All times are IST. Run `python test_offline.py` after changes; it uses real Cricbuzz/Google News samples.
 
 ## Known limits

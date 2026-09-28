@@ -41,13 +41,12 @@ PASSING = [r"\b(joins|equals?|equalled|breaks?|broke|surpass\w*|overtak\w*|goes 
            r",\s([\w.]+\s)?{s},"]            # one name in a list: "Rohit, Dhoni, Bumrah"
 CSK_TEAM_ID, CSK_SHORT = 58, "CSK"          # Cricbuzz team id and the short name its squad lists use
 MAX_NEWS_AGE = timedelta(days=3)
-MATCH_DAY_AHEAD = timedelta(hours=24)       # look up squads for matches starting within this window
 # Cricbuzz matchInfo "state" values. Seen live on 29 Sep 2026: Preview, Upcoming, Stumps, Complete, Abandon.
 # The in-play ones follow Cricbuzz's usual wording; anything unrecognised is reported, never shown as live.
 MATCH_STATES = {"live": {"in progress", "innings break", "lunch", "tea", "dinner", "drink", "drinks", "rain", "delay",
                          "bad light", "wet outfield", "strategic timeout"},
                 "paused": {"stumps"},                                   # multi-day match, between days
-                "upcoming": {"preview", "upcoming", "toss"},
+                "upcoming": {"preview", "upcoming", "toss", "scheduled"},     # "scheduled": from the schedule page
                 "finished": {"complete", "abandon", "abandoned", "cancelled", "no result", "draw", "tie"}}
 
 # ---------- helpers ----------
@@ -82,9 +81,9 @@ def next_data(page):
     return "".join(out)
 
 def json_objects(text, key):
-    """Yield every JSON object stored under "key": in text."""
+    """Yield every JSON object or list stored under "key": in text."""
     dec = json.JSONDecoder()
-    for m in re.finditer(r'"%s":\{' % re.escape(key), text):
+    for m in re.finditer(r'"%s":[{[]' % re.escape(key), text):
         try:
             yield dec.raw_decode(text, m.end() - 1)[0]
         except ValueError:
@@ -275,6 +274,8 @@ def team_matches(page, team_id):
     """Started matches of one team on a Cricbuzz series-matches page, as {"id", "state"} dicts."""
     out = {}
     for m in json_objects(next_data(page), "matchInfo"):
+        if not isinstance(m, dict):
+            continue
         teams = {str(m.get(k, {}).get("teamId")) for k in ("team1", "team2")}
         if str(team_id) in teams and match_phase(m.get("state")) in ("live", "paused", "finished"):
             out.setdefault(str(m["matchId"]), {"id": str(m["matchId"]), "state": m.get("state", "")})
@@ -348,30 +349,45 @@ def match_phase(state):
     s = (state or "").strip().lower()
     return next((phase for phase, names in MATCH_STATES.items() if s in names), "unknown")
 
+def match_from_info(m, slugs=None, series=""):
+    """One Cricbuzz matchInfo object -> our match dict."""
+    mid, ms = str(m.get("matchId", "")), str(m.get("startDate", ""))
+    teams = [(m.get(k, {}).get("teamName", "?"), m.get(k, {}).get("teamSName", "")) for k in ("team1", "team2")]
+    return {"id": mid, "series_id": str(m.get("seriesId", "")),
+            "title": f"{teams[0][0]} vs {teams[1][0]}, {m.get('matchDesc', '')}".rstrip(", "),
+            "teams": teams, "format": m.get("matchFormat", ""), "desc": m.get("matchDesc", ""),
+            "series": m.get("seriesName") or series, "state": m.get("state", ""),
+            "phase": match_phase(m.get("state")), "status": m.get("status", ""),
+            "start": datetime.fromtimestamp(int(ms) / 1000, IST) if ms.isdigit() else None,
+            "url": f"https://www.cricbuzz.com/live-cricket-scores/{mid}/{(slugs or {}).get(mid, '')}".rstrip("/")}
+
 def parse_live_scores(page):
-    """Cricbuzz live-scores page -> one dict per match, read from the matchInfo JSON embedded in the page."""
+    """Any Cricbuzz page with matchInfo objects (live scores, series match lists) -> match dicts."""
     slugs = dict(re.findall(r"/live-cricket-scores/(\d+)/([a-z0-9-]+)", page))
     matches = {}
     for m in json_objects(next_data(page), "matchInfo"):
-        mid = str(m.get("matchId", ""))
-        if not mid or mid in matches:
-            continue
-        ms = str(m.get("startDate", ""))
-        teams = [(m.get(k, {}).get("teamName", "?"), m.get(k, {}).get("teamSName", "")) for k in ("team1", "team2")]
-        matches[mid] = {"id": mid, "title": f"{teams[0][0]} vs {teams[1][0]}, {m.get('matchDesc', '')}".rstrip(", "),
-                        "teams": teams, "format": m.get("matchFormat", ""), "desc": m.get("matchDesc", ""),
-                        "series": m.get("seriesName", ""), "state": m.get("state", ""),
-                        "phase": match_phase(m.get("state")), "status": m.get("status", ""),
-                        "start": datetime.fromtimestamp(int(ms) / 1000, IST) if ms.isdigit() else None,
-                        "url": f"https://www.cricbuzz.com/live-cricket-scores/{mid}/{slugs.get(mid, '')}".rstrip("/")}
+        if isinstance(m, dict) and m.get("matchId") and str(m["matchId"]) not in matches:
+            matches[str(m["matchId"])] = match_from_info(m, slugs)
     return list(matches.values())
+
+def parse_schedule(page):
+    """Cricbuzz schedule page: every international, domestic, league and women's match of the next ~5 days.
+    It carries no match state, so these are "Scheduled" until the live-scores page shows them."""
+    out = {}
+    for days in json_objects(next_data(page), "matchScheduleMap"):
+        for day in days if isinstance(days, list) else []:
+            for series in (day.get("scheduleAdWrapper") or {}).get("matchScheduleList", []):
+                for mi in series.get("matchInfo", []):
+                    m = match_from_info({**mi, "state": "Scheduled"}, series=series.get("seriesName", ""))
+                    out.setdefault(m["id"], m)
+    return list(out.values())
 
 def parse_squads(page):
     """Cricbuzz match-squads page -> {player id: {name, team, group}}.
     group is "Squad" before the toss, then "playing XI" or "bench"."""
     out = {}
     for groups in json_objects(next_data(page), "players"):
-        for group, players in groups.items():
+        for group, players in (groups.items() if isinstance(groups, dict) else []):
             if group.lower() == "support staff" or not isinstance(players, list):
                 continue
             for p in players:
@@ -392,9 +408,25 @@ def get_squads(cfg, db, m):
     db.execute("delete from match_squads where ts < ?", (time.time() - 7 * 86400,)); db.commit()
     return players
 
+def expected_squads(cfg, db, m):
+    """Squad not published yet: take each team's squad from its latest started match in the same series
+    (e.g. the 1st ODI squad for the 2nd ODI). These players are marked "expected"."""
+    wanted = {short for _, short in m["teams"] if short}
+    earlier = [x for x in parse_live_scores(http_get(cfg["series_matches_url"].format(sid=m["series_id"])))
+               if x["series_id"] == m["series_id"] and x["id"] != m["id"] and x["phase"] in ("live", "paused", "finished")
+               and x["start"] and m["start"] and x["start"] < m["start"]]
+    out = {}
+    for x in sorted(earlier, key=lambda x: x["start"], reverse=True)[:6]:
+        found = {pid: {**e, "group": "expected"} for pid, e in get_squads(cfg, db, x).items() if e["team"] in wanted}
+        out.update(found)
+        wanted -= {e["team"] for e in found.values()}
+        if not wanted:
+            break
+    return out
+
 def players_in_matches(matches, roster, squads):
     """Link CSK players to matches through each match's Cricbuzz squad list, so any team or league works.
-    One hit per (player, match); role is "xi", "bench" or "squad" (XI not published yet)."""
+    One hit per (player, match); role is "xi", "bench", "squad" (XI not out yet) or "expected" (squad not out yet)."""
     hits = []
     for m in matches:
         sq = squads.get(m["id"]) or {}
@@ -403,7 +435,7 @@ def players_in_matches(matches, roster, squads):
             e = sq.get(str(p.get("id", ""))) or by_name.get(norm(p["name"]))
             if e:
                 g = e["group"].lower()
-                role = "xi" if g == "playing xi" else "bench" if g == "bench" else "squad"
+                role = {"playing xi": "xi", "bench": "bench", "expected": "expected"}.get(g, "squad")
                 # squad lists use the short team name ("INDA"); map it to "India A" and find the opponent
                 mine = next((i for i, tm in enumerate(m.get("teams", [])) if tm[1] == e["team"]), None)
                 team = m["teams"][mine][0] if mine is not None else e["team"]
@@ -411,61 +443,120 @@ def players_in_matches(matches, roster, squads):
                 hits.append({"player": p["name"], "team": team, "opponent": opponent, "role": role, "match": m})
     return hits
 
-def describe(h):
+ROLE_TEXT = {"xi": "playing XI", "squad": "in squad", "bench": "on bench", "expected": "expected, squad not out yet"}
+
+def day_label(dt, now):
+    days = (dt.astimezone(IST).date() - now.date()).days
+    return "TODAY" if days == 0 else "TOMORROW" if days == 1 else dt.astimezone(IST).strftime("%a %d %b").upper()
+
+def describe(h, now=None):
     """(css class, badge text) for a hit. Only a live match gives PLAYING NOW."""
-    m, role = h["match"], h["role"]
+    m, role, now = h["match"], h["role"], now or datetime.now(IST)
     if m["phase"] == "live":
         if role == "xi": return "live", f"PLAYING NOW (started {ist(m['start'])})"
-        if role == "squad": return "live", f"LIVE, in squad, XI not published (started {ist(m['start'])})"
-        return "off", "Match live, on the bench"
-    if m["phase"] == "upcoming":
-        return "soon", f"PLAYING TODAY, starts {ist(m['start'])}" + (", in XI" if role == "xi" else ", in squad")
+        if role == "bench": return "off", "Match live, on the bench"
+        return "live", f"LIVE, in squad, XI not published (started {ist(m['start'])})"
+    if m["phase"] == "upcoming" and m["start"]:
+        return "soon", f"PLAYING {day_label(m['start'], now)}, starts {ist(m['start'])}, {ROLE_TEXT[role]}"
     if m["phase"] == "paused":
         return "off", f"{m['state']}: {m['status']}"
     return "off", f"Cricbuzz state '{m['state']}': {m['status']}"
 
+def match_block(hs):
+    """Lines for one match in a digest or alert: teams, format, start time, then the CSK players in it."""
+    m = hs[0]["match"]
+    when = {"live": "LIVE now", "paused": m["state"]}.get(m["phase"], f"starts {m['start']:%H:%M} IST")
+    lines = [f"• {m['teams'][0][0]} vs {m['teams'][1][0]} · {m['format'] or '?'} · {when}"]
+    lines += [f"   {h['player']} ({h['team']}, {ROLE_TEXT[h['role']]})" for h in hs]
+    lines.append(f"   {m['desc']}, {m['series']}\n   {m['url']}")
+    return "\n".join(lines)
+
+def match_day(m, now):
+    return "TODAY" if m["phase"] in ("live", "paused") else day_label(m["start"], now)   # a Test on day 3 is today's
+
+def day_sections(hits, now):
+    """Group hits by IST day (TODAY / TOMORROW), then by match, earliest first."""
+    by_match = {}
+    for h in sorted(hits, key=lambda h: h["match"]["start"]):
+        by_match.setdefault(h["match"]["id"], []).append(h)
+    days = {}
+    for hs in by_match.values():
+        days.setdefault(match_day(hs[0]["match"], now), []).append(match_block(hs))
+    return "\n\n".join(f"{day} ({(now + timedelta(days=0 if day == 'TODAY' else 1)):%a %d %b})\n" + "\n".join(blocks)
+                       for day, blocks in days.items())
+
 def check_matches(cfg, db, roster, dry_run):
     try:
-        matches = parse_live_scores(http_get(cfg["live_scores_url"]))
+        live = parse_live_scores(http_get(cfg["live_scores_url"]))
     except Exception as e:
         print(f"[warn] live scores failed: {e}", file=sys.stderr)
+        live = []
+    try:
+        scheduled = parse_schedule(http_get(cfg["schedule_url"]))
+    except Exception as e:
+        print(f"[warn] schedule failed: {e}", file=sys.stderr)
+        scheduled = []
+    if not live and not scheduled:
+        print("[warn] no match data on Cricbuzz; its page format may have changed", file=sys.stderr)
         return []
-    if not matches:
-        print("[warn] no match data on the Cricbuzz live-scores page; its format may have changed", file=sys.stderr)
-        return []
-    now, squads = datetime.now(IST), {}
-    for m in matches:
+    now = datetime.now(IST)
+    matches = {m["id"]: m for m in scheduled if m["start"] and m["start"] > now}   # started ones: trust live scores
+    matches.update({m["id"]: m for m in live})
+    squads = {}
+    for m in matches.values():
         if m["phase"] == "unknown":
             print(f"[warn] unknown Cricbuzz match state '{m['state']}' ({m['title']}); not treated as live", file=sys.stderr)
-        soon = m["phase"] == "upcoming" and m["start"] and m["start"] - now <= MATCH_DAY_AHEAD
+        soon = m["phase"] == "upcoming" and m["start"] and (m["start"].date() - now.date()).days in (0, 1)
         if soon or m["phase"] in ("live", "paused", "unknown"):
             try:
                 squads[m["id"]] = get_squads(cfg, db, m)
+                if not squads[m["id"]] and soon and m["series_id"]:
+                    squads[m["id"]] = expected_squads(cfg, db, m)
             except Exception as e:
                 print(f"[warn] squads for {m['title']} failed: {e}", file=sys.stderr)
-    hits = players_in_matches(matches, roster, squads)
-    alerts = {}                             # one alert per match and kind
+    hits = players_in_matches(list(matches.values()), roster, squads)
+    kv = lambda k: db.execute("select 1 from kv where k=?", (k,)).fetchone()
+    mark = lambda k: db.execute("insert or replace into kv values(?,?)", (k, "1"))
+
+    # 1. PLAYING NOW: once per match, when it is live and a CSK player is in the XI (or the squad, before the XI is out).
+    live_hits = {}
     for h in hits:
-        m = h["match"]
-        if m["phase"] == "live" and h["role"] in ("xi", "squad"):
-            alerts.setdefault((m["id"], "live"), []).append(h)
-        elif m["phase"] == "upcoming":
-            alerts.setdefault((m["id"], "today"), []).append(h)
-    for (mid, kind), hs in alerts.items():
-        key = f"alert:{kind}:{mid}"
-        if db.execute("select 1 from kv where k=?", (key,)).fetchone():
+        if h["match"]["phase"] == "live" and h["role"] != "bench":
+            live_hits.setdefault(h["match"]["id"], []).append(h)
+    for mid, hs in live_hits.items():
+        if kv(f"alert:live:{mid}"):
             continue
-        db.execute("insert into kv values(?,?)", (key, "1")); db.commit()
+        mark(f"alert:live:{mid}"); db.commit()
         m = hs[0]["match"]
-        who = ", ".join(f"{h['player']} ({h['team']}, {'playing XI' if h['role'] == 'xi' else 'in squad'})" for h in hs)
-        if kind == "live":
-            head = f"🏏 PLAYING NOW: {who}\nStarted {ist(m['start'])}"
-            if any(h["role"] == "squad" for h in hs):
-                head += " (playing XI not published yet)"
+        who = ", ".join(f"{h['player']} ({h['team']}, {ROLE_TEXT[h['role']]})" for h in hs)
+        note = " (playing XI not published yet)" if any(h["role"] != "xi" for h in hs) else ""
+        send_alert(cfg, f"🏏 PLAYING NOW: {who}\nStarted {ist(m['start'])}{note}\n{m['title']} · {m['format']}\n"
+                        f"{m['series']}\n{m['status']}\n{m['url']}", dry_run)
+
+    # 2. Morning digest of today's and tomorrow's matches, then an alert for any match found after it.
+    coming = [h for h in hits if h["role"] != "bench" and h["match"]["start"]
+              and (h["match"]["phase"] in ("live", "paused")
+                   or (h["match"]["phase"] == "upcoming" and (h["match"]["start"].date() - now.date()).days in (0, 1)))]
+    hour = cfg["alert"].get("match_digest_hour", 8)
+    digest_at = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if now >= digest_at and not kv(f"digest:{now:%Y-%m-%d}"):
+        mark(f"digest:{now:%Y-%m-%d}")
+        for h in coming:
+            mark(f"announced:{h['match']['id']}")
+        db.commit()
+        if coming:
+            send_alert(cfg, "📅 CSK PLAYERS' MATCHES\n\n" + day_sections(coming, now), dry_run)
         else:
-            head = f"📅 PLAYING TODAY: {who}\nStarts {ist(m['start'])}"
-        fmt = f" · {m['format']}" if m.get("format") else ""
-        send_alert(cfg, f"{head}\n{m['title']}{fmt}\n{m['series']}\n{m['status']}\n{m['url']}", dry_run)
+            send_alert(cfg, "📅 No CSK player has a match today or tomorrow.", dry_run, silent=True)
+        return hits
+    digest_done = now >= digest_at                          # before 8 AM: hold matches the digest will cover
+    new = [h for h in coming if h["match"]["phase"] == "upcoming"   # live ones already got PLAYING NOW
+           and not kv(f"announced:{h['match']['id']}") and (digest_done or h["match"]["start"] < digest_at)]
+    if new:
+        for h in new:
+            mark(f"announced:{h['match']['id']}")
+        db.commit()
+        send_alert(cfg, "📅 NEW MATCH FOR CSK PLAYERS\n\n" + day_sections(new, now), dry_run)
     return hits
 
 # ---------- dashboard ----------

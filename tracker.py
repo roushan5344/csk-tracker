@@ -225,7 +225,7 @@ def mention(title, name):
     found = re.search(rf"\b{re.escape(name)}\b", t, re.I)
     if not found and len(parts) > 1:
         found = short_name(t, parts)
-    if not found:
+    if not found and re.search(CRICKET, t, re.I):     # a nickname counts only in a cricket headline, like a first name
         found = next((re.search(rf"\b{a}\b", t) for a in ALIASES.get(name, []) if re.search(rf"\b{a}\b", t)), None)
     if not found:
         return None

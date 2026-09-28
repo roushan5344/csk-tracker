@@ -93,7 +93,10 @@ for h, want in [
         ("\"He Was The Perfect Pro Wrestler\": Matt Cardona Mourns PAC’s Death At 40 With Emotional WWE Throwback", []),
         ("England twins Jamie and Craig Overton will play Big Bash League alongside each other this summer", ["Jamie Overton"]),
         ("UPT20 2026: Prashant Veers all round show, Kartik Siddhus hat-trick help Noida Kings beat Kashi Rudras",
-         ["Prashant Veer", "Kartik Sharma"])]:      # Kartik Sharma is wrong (it's Kartik Siddhu): accepted, a miss is worse
+         ["Prashant Veer", "Kartik Sharma"]),       # Kartik Sharma is wrong (it's Kartik Siddhu): accepted, a miss is worse
+        # a nickname counts only in a cricket headline ("Thala" is also the actor Ajith)
+        ("Mahi bhai back in the nets ahead of IPL 2027", ["MS Dhoni"]),
+        ("Thala Ajith's new film to release on Diwali", [])]:
     assert t.tag_item(h, names, set()) == want, (h, t.tag_item(h, names, set()))
 # "appointment" is breaking only for a CSK / coach / captain appointment
 assert t.classify("Mohammad Yousuf names MS Dhoni appointment as decisive moment in Indian cricket's rise")[0] == "minor"

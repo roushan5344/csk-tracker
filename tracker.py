@@ -248,7 +248,8 @@ def tag_item(title, roster_names, muted):
 
 def is_article(title):
     head = re.sub(r"\s[-|]\s[^-|]+$", "", title)                # drop " - Publisher"
-    return head != head.lower() and not re.search(NOT_ARTICLE, title, re.I)   # all-lowercase = a Cricbuzz team page
+    team_page = re.search(r"\bcricket team news(\s*&\s*matches)?$", head, re.I)   # "Chennai Super Kings Cricket Team News & Matches"
+    return head != head.lower() and not team_page and not re.search(NOT_ARTICLE, title, re.I)   # all-lowercase = a Cricbuzz team page
 
 def is_duplicate(db, title):
     key = hashlib.sha1(norm(title).encode()).hexdigest()

@@ -63,6 +63,8 @@ DROP = [
     "GT vs CSK Live Full Scorecard",                                                 # old pages Bing re-dated to
     "CSK Squad IPL 2026",                                                            # 26 Sep, not news
     "Live Cricket Score, Schedule, Latest News, Stats & Videos - cricbuzz.com",
+    "Chennai Super Kings Cricket Team News & Matches",                               # team pages (real, 28 Sep)
+    "INDIA CRICKET TEAM NEWS",
 ]
 # The surname rule must reject other people with a tracked player's surname.
 assert t.tag_item("Rhythm, control and a Kuldeep Yadav masterclass", ["Kuldip Yadav"], set()) == []

@@ -565,6 +565,32 @@ class TestDuplicates(Base):
                                    "Washington Sundar CSK Trade Rumor: Is It Actually Happening?"]))
         self.assertEqual(len(latest), 2)
 
+    MOHIT = ["Mohit Sharma set to join CSK as bowling coach - The Times of India",                  # real, 29 Sep 2026
+             "Mohit Sharma to join CSK as bowling coach - Cricbuzz",
+             "Mohit Sharma joins Chennai Super Kings as bowling coach - CricTracker",
+             "Mohit Sharma set for CSK return in new role ahead of 2027 IPL season - cricketaddictor.com",
+             "India star Mohit Sharma to join Dhoni's CSK as new bowling coach for IPL 2027 - News24Online",
+             "Mohit Sharma likely to become CSK bowling coach ahead of IPL 2027 - Sports Tiger",
+             "Mohit Sharma set to join CSK in this role: Details - NewsBytes",
+             "Mohit Sharma likely to join Chennai Super Kings as bowling coach ahead of IPL 2027",
+             "IPL: Mohit Sharma set to join CSK as bowling coach"]
+
+    def test_team_stories_about_one_person_are_grouped(self):
+        latest = self.process(rss(self.MOHIT))
+        self.assertEqual([i["title"] for i in latest], [self.MOHIT[0], self.MOHIT[2]])   # first report + "joins"
+        self.assertEqual([s["text"].splitlines()[0] for s in self.sent],
+                         ["⚠️ IMPORTANT [RUMOUR] | CSK", "🚨 BREAKING | CSK"])
+
+    def test_who_a_team_story_is_about(self):
+        self.assertEqual(t.story_person("IPL: Mohit Sharma set to join CSK as bowling coach", self.names), "Mohit Sharma")
+        self.assertEqual(t.story_person("Washington Sundar CSK Trade Rumor: Is It Actually Happening?", self.names),
+                         "Washington Sundar")
+        self.assertEqual(t.story_person("Chennai Super Kings Announce Zaheer Khan As New Head Coach", self.names),
+                         "Zaheer Khan")
+        self.assertIsNone(t.story_person("IPL 2027 transfers: List of confirmed swaps, trade rumours", self.names))
+        self.assertEqual(t.tag_item(self.MOHIT[4], self.names, set()), ["CSK"])        # "Dhoni's CSK" is CSK news
+        self.assertEqual(t.story_event(self.MOHIT[1]), "coach")
+
     def test_event_kinds(self):
         self.assertNotEqual(t.story_event("Virat Kohli names his 'ideal ODI batter', leaves out Rohit Sharma and MS Dhoni"),
                             "injury")

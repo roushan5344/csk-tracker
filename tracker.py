@@ -60,7 +60,8 @@ INJURY = (r"\b(injur\w*|ruled out|strain\w*|side issue|hamstring|niggle|scans?|f
 STORY_EVENTS = [
     ("retirement", r"retir(e|es|ed|ement)"),
     ("captaincy", r"captaincy|(new|named|appointed|as) (captain|skipper|vice-captain)|steps? down|leadership"),
-    ("coach", r"head coach|new coach|coach(ing)? (role|job|staff)|(csk|coach\w*|captain\w*)('s)? appointment"),
+    ("coach", r"(head|bowling|batting|fielding|spin|assistant|new) coach(es)?|coach(ing)? (role|job|staff)|support staff"
+              r"|(csk|coach\w*|captain\w*)('s)? appointment"),
     ("transfer", r"trade[sd]?|trading|released|retained|retention|auction|signs|signed|joins|ropes? in|roped in|swaps?"),
     ("selection", r"named (in|for)|selected|dropped|picked|included|recalled|omitted|omission|snub\w*|playing xi"
                   r"|announce[sd]? [\w\- ]{0,30}squad"),
@@ -79,6 +80,7 @@ PASSING = [r"\b(joins|equals?|equalled|breaks?|broke|surpass\w*|overtak\w*|goes 
            r"\s([\w.,]+\s){{0,2}}?{s}\b",
            r"\b{s}'?s?'?\s(\d{{4}}|record|feat|tally|influen|legacy|(t20 )?world cup|captaincy|advice|mantra)",
            r"\bfrom\s([\w.]+\s){{0,2}}{s}'s\b",
+           r"\b{s}'s (csk|chennai super kings|side|team)\b",       # "to join Dhoni's CSK" is CSK news
            r",\s([\w.]+\s)?{s},"]            # one name in a list: "Rohit, Dhoni, Bumrah"
 CSK_TEAM_ID, CSK_SHORT = 58, "CSK"          # Cricbuzz team id and the short name its squad lists use
 MAX_NEWS_AGE = timedelta(days=3)            # older stories are ignored entirely
@@ -401,29 +403,54 @@ def mark_seen(db, title, when=None):
 def story_event(title):
     return next((e for e, p in STORY_EVENTS if re.search(rf"\b({p})\b", title, re.I)), None)
 
+NOT_A_PERSON = {"ipl", "csk", "chennai", "super", "kings", "india", "indian", "star", "former", "ex", "watch", "big",
+                "double", "breaking", "report", "reports", "sports", "news", "team", "south", "west", "new", "live"}
+
+def story_person(title, roster_names):
+    """The person a CSK team story is about (Mohit Sharma in "Mohit Sharma to join CSK as bowling coach"): the first
+    known cricketer or namesake named in it who isn't a CSK player, else a name leading the headline."""
+    low = title.lower().replace("’", "'")
+    found = [(low.find(n.lower()), n) for v in other_names.values() for n in v
+             if n not in roster_names and re.search(rf"\b{re.escape(n.lower())}\b", low)]
+    if found:
+        return min(found)[1]
+    m = re.match(r"^(?:[^:]{0,25}:\s*)?([A-Z][a-z]+) ([A-Z][a-z]+)\b", title)   # "IPL: Mohit Sharma set to..."
+    if m and m.group(1).lower() not in NOT_A_PERSON and m.group(2).lower() not in NOT_A_PERSON:
+        return f"{m.group(1)} {m.group(2)}"
+    return None
+
+def story_keys(it, tags, roster_names):
+    """What a story is about, to spot other publishers' copies: (CSK player, kind of event) for player stories;
+    (person, "any") for team stories about someone else (a coach, a trade target). None: never grouped (the team's
+    own posts, player stories of no recognised kind, team stories about no one in particular)."""
+    if it.get("official"):
+        return None
+    players = [p for p in tags if p in roster_names]
+    if players:
+        ev = story_event(it["title"])
+        return [(p, ev) for p in players] if ev else None
+    person = story_person(it["title"], roster_names)
+    return [(person, "any")] if person else None
+
 def repeat_story(db, it, tags, imp, roster_names):
-    """The same story from another publisher: every tagged player already had a story of this kind in the last
-    24 hours, ranked at least as high. Team-only stories, the team's own posts and stories of no recognised kind
-    are never treated as repeats, so an unusual story can't be swallowed."""
-    players, ev = [p for p in tags if p in roster_names], story_event(it["title"])
-    if not players or not ev or it.get("official"):
+    """The same story from another publisher: everyone it's about already had a story of this kind in the last
+    24 hours, ranked at least as high."""
+    keys = story_keys(it, tags, roster_names)
+    if not keys:
         return False
-    for p in players:
+    for who, ev in keys:
         row = db.execute("select rank from story_events where player=? and event=? and ts>=?",
-                         (p, ev, time.time() - 86400)).fetchone()
-        if not row or RANKS[imp] > row[0]:          # new, or a higher-ranked report ("injury doubt" -> "ruled out")
+                         (who, ev, time.time() - 86400)).fetchone()
+        if not row or RANKS[imp] > row[0]:          # new, or a higher-ranked report ("set to join" -> "joins")
             return False
     return True
 
 def remember_story(db, it, tags, imp, roster_names):
-    ev = story_event(it["title"])
-    if not ev or it.get("official"):
-        return
-    for p in (p for p in tags if p in roster_names):
+    for who, ev in story_keys(it, tags, roster_names) or []:
         row = db.execute("select rank from story_events where player=? and event=? and ts>=?",
-                         (p, ev, time.time() - 86400)).fetchone()
+                         (who, ev, time.time() - 86400)).fetchone()
         db.execute("insert or replace into story_events values(?,?,?,?)",
-                   (p, ev, max(RANKS[imp], row[0]) if row else RANKS[imp], time.time()))
+                   (who, ev, max(RANKS[imp], row[0]) if row else RANKS[imp], time.time()))
     db.commit()
 
 def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):

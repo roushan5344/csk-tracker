@@ -61,7 +61,7 @@ and retries; if it can't deliver (network down, Telegram error), the message wai
 the next run for up to a day. Messages over Telegram's 4,096-character limit are split into parts.
 
 ## Tests
-`python test_offline.py` runs the regression suite (104 tests, offline, fixed clock, real Cricbuzz / Google News /
+`python test_offline.py` runs the regression suite (106 tests, offline, fixed clock, real Cricbuzz / Google News /
 Bing samples): news, roster, matches, performance, Telegram messages, dashboard, config and workflows. GitHub runs
 it on every push (`.github/workflows/tests.yml`); a red ✗ on the commit means something broke.
 
@@ -78,8 +78,10 @@ it on every push (`.github/workflows/tests.yml`); a red ✗ on the commit means 
 - Duplicates: a near-identical headline is dropped, and the same story told by other publishers in other words is
   grouped by player and kind of event (injury, selection, performance, trade, captaincy, coach, retirement): once a
   story about a player is sent, further reports of the same kind within 24 hours are neither sent nor shown on the
-  dashboard, unless they rank higher ("injury doubt" -> "ruled out"). Team-only stories and stories of no
-  recognised kind are never grouped, so a few repeats of those can still get through.
+  dashboard, unless they rank higher ("injury doubt" -> "ruled out"). CSK team stories about someone else (a new
+  coach, a trade target: "Mohit Sharma to join CSK as bowling coach") are grouped by that person the same way.
+  Player stories of no recognised kind and team stories about no one in particular are never grouped, so a few
+  repeats of those can still get through.
 - Match alerts show recent injury headlines (last 4 days) under a player who isn't confirmed in the XI yet, marked
   ⚠️. The player is never removed because of news; Cricbuzz's squad and playing XI decide.
 - If Cricbuzz changes its page format you'll see `[warn] no match data...` or a roster-source warning.

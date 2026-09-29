@@ -4,7 +4,7 @@ polling, config and the GitHub workflow. Each test gets its own empty state.db a
 
 Run:  python test_offline.py        (python test_offline.py -v lists every test)
 """
-import hashlib, io, json, os, re, sqlite3, sys, tempfile, unittest, urllib.parse
+import hashlib, io, json, os, re, shutil, sqlite3, sys, tempfile, unittest, urllib.parse
 from datetime import datetime, timedelta
 from email.utils import format_datetime
 from unittest import mock
@@ -220,6 +220,7 @@ class Base(unittest.TestCase):
             self.addCleanup(p.stop)
         self.db = t.db_connect(os.path.join(self.tmp, "state.db"))
         self.addCleanup(self.db.close)
+        shutil.copy(os.path.join(ROOT, "cricketers.json"), self.tmp)       # the real list, as in production
         t.set_other_names(self.cfg, self.db, self.names)
 
     def fake_get(self, url, timeout=20, **kw):
@@ -294,8 +295,8 @@ class TestRepoHygiene(unittest.TestCase):
             return f.read()
 
     def test_no_bot_token_in_any_committed_file(self):
-        for name in ("tracker.py", "config.json", "README.md", "CLAUDE.md", "test_offline.py", ".gitignore",
-                     os.path.join(".github", "workflows", "tracker.yml")):
+        for name in ("tracker.py", "config.json", "README.md", "CLAUDE.md", "cricketers.json", "test_offline.py",
+                     ".gitignore", os.path.join(".github", "workflows", "tracker.yml")):
             self.assertIsNone(re.search(r"\b\d{8,10}:[A-Za-z0-9_-]{30,}", self.read(name)), name)
 
     def test_state_and_dashboard_are_not_committed(self):
@@ -333,6 +334,14 @@ class TestRepoHygiene(unittest.TestCase):
         self.assertRegex(pages_job, r"environment:\s*\n\s*name: github-pages")
         self.assertNotIn("id-token", run_job)                                  # the job with the secrets gets no more rights
         self.assertNotIn("secrets.", pages_job)
+
+    def test_cricketers_list(self):
+        names = json.loads(self.read("cricketers.json"))
+        self.assertGreater(len(names), 5000)                                  # every cricketer Cricbuzz lists
+        self.assertEqual(names, sorted(set(names)))
+        self.assertTrue(all(" " in n for n in names))
+        for name in ("Babar Azam", "Shadab Khan", "Kuldeep Yadav"):
+            self.assertIn(name, names)
 
     def test_test_workflow_runs_the_suite_on_every_push(self):
         y = self.read(".github", "workflows", "tests.yml")
@@ -486,6 +495,80 @@ class TestTagging(Base):
     def test_muted_players_and_dhoni_always_tracked(self):
         self.assertEqual(t.tag_item("Nathan Ellis suffered a side issue", self.names, {"Nathan Ellis"}), [])
         self.assertEqual(t.tag_item("MS Dhoni smashes one out of sight in the CSK nets", [], set()), ["CSK", "MS Dhoni"])
+
+
+class TestOtherPeoplesNames(Base):
+    """Someone else with our player's surname: known cricketers (cricketers.json, squads read) and, for surnames many
+    people share, anyone whose first name stands before it."""
+    def tags(self, title):
+        return t.tag_item(title, self.names, set())
+
+    def test_a_common_surname_after_another_first_name_is_someone_else(self):
+        for title in ["'He Was A...': Azam Khan Reacts To His Own ‘Death’ News With Brutal Sarcasm",   # real, 29 Sep 2026
+                      "'I was mentally free' - Player of the Tournament Shadab Khan on the Falcons' CPL triumph",
+                      "Farmer's Son Salman Khan Secures India's First Men's Double Sculls Medal",
+                      "Blast in Pakistan’s Dera Ismail Khan kills 11, injures 30",
+                      "12 killed, 35 injured in D.I. Khan checkpoint blast",
+                      "Asian Games 2026: Dilpreet Singh Scores Hat-Trick As India Hammer Sri Lanka 16-1",
+                      "Vijay Dahiya replaces Sarandeep Singh as Delhi men's head coach",
+                      "Former Namibia captain Yasmeen Khan included in South Africa's red-ball training camp"]:
+            self.assertEqual(self.tags(title), [], title)
+        self.assertEqual(self.tags("Rishabh Pant, Sarfaraz Khan Ready For Irani Cup In Srinagar; Aquib Nabi Misses Due To "
+                                   "National Duty"), ["Sarfaraz Khan"])                           # real; not Aman Khan
+        tags = self.tags("CSK Sign Khan As Injury Replacement")                    # made up: "Sign" isn't a first name
+        self.assertIn("Sarfaraz Khan", tags)
+        self.assertIn("Aman Khan", tags)
+
+    def test_other_surnames_still_count_alone(self):
+        # Title Case capitalises every word: the rule would read "Suffer Ellis" as a person and miss the story.
+        self.assertEqual(self.tags("Australia Suffer Ellis Blow Ahead Of 3rd ODI"), ["Nathan Ellis"])
+        self.assertEqual(self.tags("Injured Ellis ruled out of third ODI against South Africa - Cricbuzz"), ["Nathan Ellis"])
+
+    def test_names_from_every_squad_read_are_kept(self):
+        self.cricbuzz()
+        t.check_matches(self.cfg, self.db, self.roster, True)
+        self.assertIn(("13088", "Devdutt Padikkal"), self.db.execute("select id, name from known_players").fetchall())
+        CLOCK[0] = T0 + timedelta(days=30)
+        t.prune_state(self.db)
+        t.set_other_names(self.cfg, self.db, self.names)
+        self.assertIn("Devdutt Padikkal", t.other_names["padikkal"])       # match_squads rows are gone by now
+
+    def test_squads_read_before_the_upgrade_are_carried_over(self):
+        path = os.path.join(self.tmp, "old.db")
+        old = sqlite3.connect(path)
+        old.execute("create table match_squads(match_id text primary key, ts real, state text, players text)")
+        old.execute("insert into match_squads values('155421', 0, 'Complete', ?)",   # real: SA vs AUS, 1st ODI
+                    (json.dumps({"9571": {"name": "Matt Renshaw", "team": "AUS", "group": "playing XI"}}),))
+        old.commit(); old.close()
+        db = t.db_connect(path)
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute("select name from known_players").fetchall(), [("Matt Renshaw",)])
+
+    def test_without_cricketers_json_it_warns_and_goes_on(self):
+        os.remove(os.path.join(self.tmp, "cricketers.json"))
+        t.set_other_names(self.cfg, self.db, self.names)
+        self.assertIn("cricketers.json not read", self.err.getvalue())
+        self.assertIn("Kuldeep Yadav", t.other_names["kuldeep"])            # namesakes still work
+
+    def test_refresh_cricketers(self):
+        self.cricbuzz()
+        team = '<a href="/cricket-team/guyana-amazon-warriors/159">GAW</a>'
+        self.pages = {"/cricket-team/guyana-amazon-warriors/159/players": (
+                          '<a href="/profiles/9721/shimron-hetmyer" title="Shimron Hetmyer"></a>'
+                          '<a href="/profiles/1/ashraful" title="Ashraful"></a>'),     # one name can't spell anyone out
+                      "cricket-team/league": team, "cricket-team/domestic": "", "cricket-team/women": "",
+                      "https://www.cricbuzz.com/cricket-team": "",
+                      "cricket-scorecard-archives/2025": '<a href="/cricket-series/11902/west-indies-tour-of-india-2026">',
+                      "cricket-scorecard-archives/2026": '<a href="/cricket-series/11595/x">', **self.pages}
+        path = os.path.join(self.tmp, "out.json")
+        self.assertEqual(t.refresh_cricketers(self.cfg, path, pause=0), 6)
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), ["John Campbell", "Nathan Ellis", "Rohit Sharma", "Ruturaj Gaikwad",
+                                            "Shimron Hetmyer", "Yashasvi Jaiswal"])   # squads' support staff left out
+        self.assertNotIn("cricket-match-squads/151543", " ".join(self.fetched))    # one squad per team is enough
+        self.pages.update({"cricket-scorecard-archives/2025": "", "cricket-scorecard-archives/2026": ""})   # pages changed
+        self.assertEqual(t.refresh_cricketers(self.cfg, path, pause=0), 6)       # names are only added, never lost
+        self.assertIn("did its pages change?", self.err.getvalue())
 
 
 # =====================================================================================================

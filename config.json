@@ -33,7 +33,11 @@
   "schedule_url": "https://www.cricbuzz.com/cricket-schedule/upcoming-series/all",
   "series_matches_url": "https://www.cricbuzz.com/cricket-series/{sid}/x/matches",
   "ipl_archive_url": "https://www.cricbuzz.com/cricket-scorecard-archives/{year}",
+  "team_index_urls": ["https://www.cricbuzz.com/cricket-team", "https://www.cricbuzz.com/cricket-team/domestic",
+                      "https://www.cricbuzz.com/cricket-team/league", "https://www.cricbuzz.com/cricket-team/women"],
+  "team_players_url": "https://www.cricbuzz.com/cricket-team/{slug}/{id}/players",
   "muted_players": [],
+  "common_surnames": ["Khan", "Singh", "Sharma", "Yadav", "Ahmed", "Ahmad", "Patel", "Kumar"],
   "namesakes": [
     "Kuldeep Yadav", "Suryakumar Yadav", "Umesh Yadav", "Mayank Yadav", "Jayant Yadav", "Rohit Sharma",
     "Abhishek Sharma", "Ishant Sharma", "Mohit Sharma", "Jitesh Sharma", "Karn Sharma", "Rahul Sharma",

@@ -24,6 +24,7 @@ Settings → Pages → Source: **GitHub Actions**. The page is public, like the 
 
 ## 4. Customise (`config.json`)
 - `muted_players`: names to ignore   - `alert.min_importance`: minor / important / breaking
+- `common_surnames`: surnames many people share; after a different first name they aren't our player
 - `alert.quiet_update_hours`: after this many hours with no alerts, send one silent "No new updates" message (default 3)
 - `intervals_seconds`: polling speed (`performance`: how often live scorecards are read, default 3600 = hourly)
 - `team_queries`, `extra_rss_feeds`: news sources
@@ -65,7 +66,7 @@ and retries; if it can't deliver (network down, Telegram error), the message wai
 the next run for up to a day. Messages over Telegram's 4,096-character limit are split into parts.
 
 ## Tests
-`python test_offline.py` runs the regression suite (108 tests, offline, fixed clock, real Cricbuzz / Google News /
+`python test_offline.py` runs the regression suite (115 tests, offline, fixed clock, real Cricbuzz / Google News /
 Bing samples): news, roster, matches, performance, Telegram messages, dashboard, config and workflows. GitHub runs
 it on every push (`.github/workflows/tests.yml`); a red ✗ on the commit means something broke.
 
@@ -77,8 +78,13 @@ it on every push (`.github/workflows/tests.yml`); a red ✗ on the commit means 
 - News relevance is keyword-based: passing mentions ("X breaks Dhoni's record") are dropped, but some fluff gets through.
 - Missing a story is treated as worse than a wrong tag: a player is also matched by surname or first name alone
   ("Ellis, Davies ruled out", "Ruturaj's gain"). A headline that spells out another cricketer's full name
-  ("Kuldeep Yadav", "KL Rahul") isn't counted for our player: those names come from `namesakes` in config.json plus
-  every Cricbuzz squad the tracker reads. Some wrong tags remain, mostly non-cricket "Khan" stories.
+  ("Kuldeep Yadav", "KL Rahul") isn't counted for our player: those names come from `namesakes` in config.json,
+  `cricketers.json` (every cricketer Cricbuzz lists: its team pages plus one squad per team in every series of the
+  last two years; rebuild it with `python tracker.py --refresh-names`, 30+ min) and every squad the tracker reads.
+  For surnames many people share (`common_surnames`: Khan, Singh, Sharma...), a different first name right before
+  it means someone else even if he isn't a cricketer ("Azam Khan", "Salman Khan", "Dilpreet Singh"). Other surnames
+  don't get that rule: headlines in Title Case capitalise every word, so "Australia Suffer Ellis Blow" would look
+  like a man called Suffer Ellis. Some wrong tags remain (non-cricketers with other surnames).
 - Duplicates: a near-identical headline is dropped, and the same story told by other publishers in other words is
   grouped by player and kind of event (injury, selection, performance, trade, captaincy, coach, retirement): once a
   story about a player is sent, further reports of the same kind within 24 hours are neither sent nor shown on the

@@ -6,7 +6,8 @@ README.md is the user guide; this file is the why.
 
 ## Files
 - `tracker.py` – everything. Sections: helpers, alerts, news, roster, match day, player performance, dashboard, main loop.
-- `config.json` – sources, intervals, fallback roster, `namesakes`. `test_offline.py` – offline regression suite.
+- `config.json` – sources, intervals, fallback roster, `namesakes`, `common_surnames`. `test_offline.py` – offline suite.
+- `cricketers.json` – every cricketer name on Cricbuzz (`refresh_cricketers`, `--refresh-names`), to reject namesakes.
 - `state.db` (SQLite) and `dashboard.html` – git-ignored, written each run; Actions keeps `state.db` in its cache.
 
 ## How a run works (`run_cycle`)
@@ -14,7 +15,8 @@ flush outbox → roster refresh + prune (daily) → `set_other_names` → news (
 `check_matches` → `poll_performances` → `write_dashboard` → `quiet_check_in`. Tables in `db_connect`:
 seen (news already handled) · squad (live roster) · kv (last-run times, announced flags) · match_squads · news_matches
 (matches only the news mentions) · news_checked · story_events (same story from other publishers) · outbox (unsent
-Telegram) · news_feed (dashboard news) · series_cache · tracked_matches (matches we alerted on) · performances.
+Telegram) · news_feed (dashboard news) · series_cache · tracked_matches (matches we alerted on) · performances ·
+known_players (names from every squad read, never pruned).
 
 ## Rules
 - Standard library only, keep it to these few files; ask before installing anything.
@@ -27,12 +29,14 @@ Telegram) · news_feed (dashboard news) · series_cache · tracked_matches (matc
 ## Design decisions
 - Recall over precision: a missed story is worse than a wrong or duplicate one. Surname alone matches; first names
   and nicknames (`ALIASES`) only in cricket headlines; a hit inside another cricketer's full name is rejected.
+  Only `common_surnames` are rejected after any other first name (Title Case makes "Suffer Ellis" look like a name).
 - News never removes a player from a match alert; injury news only adds a ⚠️ flag. Report headlines as written.
 - Only a live match state (`MATCH_STATES`) means PLAYING NOW; unknown states are warned about, never shown as live.
 - All times are IST. The dashboard shows the same stories as Telegram (last 24 h, from `news_feed`).
 
 ## Gotchas
-- Cricbuzz is Next.js: page data is in `self.__next_f.push` chunks (`next_data` helper), not plain HTML.
+- Cricbuzz is Next.js: page data is in `self.__next_f.push` chunks (`next_data` helper), not plain HTML. Series
+  squad pages load their players later, so names come from match squad pages instead.
 - Cricinfo returns random 403s, retried with `BROWSER_UA`. Google News links can't be opened to read the article.
 - Workflow YAML: never put `${{ }}` inside a `{...}` flow mapping (broke the run on 29 Sep 2026; tested).
 - The anonymous GitHub API allows 60 calls an hour: check a run's status once, don't poll it in a loop.

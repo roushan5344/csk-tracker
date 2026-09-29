@@ -180,7 +180,18 @@ def db_connect(path=None):
                " start real, last_poll real, last_text text, final integer default 0, added real)")
     db.execute("create table if not exists performances(match_id text, player text, line text, final integer,"
                " ts real, primary key(match_id, player))")
+    # Everyone in the squads read (match_squads is dropped after 7 days); never pruned, it only grows slowly.
+    db.execute("create table if not exists known_players(id text primary key, name text)")
+    if not db.execute("select 1 from known_players limit 1").fetchone():    # squads read before this table existed
+        for (players,) in db.execute("select players from match_squads").fetchall():
+            remember_players(db, json.loads(players))
+        db.commit()
     return db
+
+def remember_players(db, players):
+    """Keep the names from a squad page ({id: {name...}}) so they are still known after match_squads drops it."""
+    db.executemany("insert or replace into known_players values(?,?)",
+                   [(pid, p["name"].strip()) for pid, p in players.items() if " " in p["name"].strip()])
 
 # ---------- alerts ----------
 alerts_sent = 0                             # counts alerts, so a cycle knows whether anything new went out
@@ -320,10 +331,11 @@ def short_name(t, parts):
     - the surname alone counts ("Ellis, Davies ruled out", "Macneil Hadley Noronha");
     - the first name alone counts in a cricket headline: one with the surname anywhere ("Jamie and Craig Overton")
       or a cricket word ("Ruturaj's gain: CSK skipper..."), which keeps out "Matt Cardona mourns PAC's death";
-    - neither counts when it is part of another cricketer's full name ("Kuldeep Yadav" is not Kuldip Yadav)."""
+    - neither counts when it is part of another cricketer's full name ("Kuldeep Yadav" is not Kuldip Yadav);
+    - a surname many people share doesn't count after a different first name ("Azam Khan", "Dilpreet Singh")."""
     first, last = parts[0], parts[-1]
     for m in re.finditer(rf"\b{re.escape(last)}\b", t):
-        if not someone_else(t, m, parts):
+        if not someone_else(t, m, parts) and not other_first_name(t, m, parts):
             return m
     cricket = re.search(rf"\b{re.escape(last)}", t, re.I) or re.search(CRICKET, t, re.I)
     if len(first) >= 3 and not first.isupper() and cricket:    # skip initials like "MS"
@@ -333,17 +345,25 @@ def short_name(t, parts):
     return None
 
 other_names = {}                            # word -> full names of other cricketers using it; see set_other_names
+common_surnames = set()                     # config "common_surnames", lower case; see other_first_name
 
 def set_other_names(cfg, db, roster_names):
-    """Other cricketers' full names: config "namesakes", the other CSK players, and everyone in the Cricbuzz squads
-    already fetched. A short-name match inside one of these ("Kuldeep Yadav", "KL Rahul") is that person, not ours."""
+    """Other cricketers' full names: config "namesakes", the other CSK players, every cricketer Cricbuzz lists
+    (cricketers.json, see refresh_cricketers) and everyone in the squads read since. A short-name match inside one
+    of these ("Kuldeep Yadav", "KL Rahul") is that person, not ours."""
     names = set(cfg.get("namesakes", [])) | set(roster_names)
-    for (players,) in db.execute("select players from match_squads"):
-        names |= {p["name"] for p in json.loads(players).values() if " " in p["name"]}
+    try:
+        with open(os.path.join(HERE, "cricketers.json"), encoding="utf-8") as f:
+            names |= set(json.load(f))
+    except (OSError, ValueError) as e:
+        print(f"[warn] cricketers.json not read ({e}); only namesakes and squads are known", file=sys.stderr)
+    names |= {n for (n,) in db.execute("select name from known_players")}
     other_names.clear()
     for n in names:
         for w in n.lower().split():
             other_names.setdefault(w, set()).add(n)
+    common_surnames.clear()
+    common_surnames.update(s.lower() for s in cfg.get("common_surnames", []))
 
 def someone_else(t, m, parts):
     """True if this match is part of another cricketer's full name written out in the headline. It can only reject
@@ -355,6 +375,26 @@ def someone_else(t, m, parts):
         if any(x.start() <= m.start() < x.end() for x in re.finditer(rf"\b{re.escape(other)}\b", t, re.I)):
             return True
     return False
+
+# Capitalised words that can stand before a surname in a headline without being a first name ("CSK Sign Khan").
+HEADLINE_WORDS = {"as", "for", "and", "of", "the", "to", "with", "by", "on", "in", "at", "from", "vs", "before", "why",
+                  "how", "what", "when", "is", "was", "will", "can", "sign", "signs", "recall", "recalls", "drop", "drops",
+                  "pick", "picks", "named", "names", "hails", "praises", "slams", "backs", "pacer", "skipper", "captain",
+                  "uncapped", "young", "veteran", "spinner", "batter", "bowler", "opener", "keeper", "youngster", "seamer",
+                  "batsman", "injured"}
+
+def other_first_name(t, m, parts):
+    """True if a different first name (or initials) stands right before this surname, and the surname is one many
+    people share ("Azam Khan", "D.I. Khan", "Dilpreet Singh" are not our Khan or Singh). Only for those surnames:
+    in a Title Case headline every word is capitalised, so for others "Australia Suffer Ellis Blow" would look like
+    a man called Suffer Ellis, and a real story would be missed."""
+    if parts[-1].lower() not in common_surnames:
+        return False
+    before = re.search(r"(?:^|\s)([A-Z][a-z]+|(?:[A-Z]\.){1,3})\s+$", t[:m.start()])
+    if not before or before.group(1).lower() in HEADLINE_WORDS | NOT_A_PERSON:
+        return False
+    word = before.group(1)
+    return word[0] != parts[0][0] if word.endswith(".") else not same_name(word, parts[0])
 
 def mention(title, name):
     """'about' if the headline is about this player, 'passing' if he is only a yardstick for someone else, else None."""
@@ -410,7 +450,8 @@ def story_person(title, roster_names):
     """The person a CSK team story is about (Mohit Sharma in "Mohit Sharma to join CSK as bowling coach"): the first
     known cricketer or namesake named in it who isn't a CSK player, else a name leading the headline."""
     low = title.lower().replace("’", "'")
-    found = [(low.find(n.lower()), n) for v in other_names.values() for n in v
+    candidates = {n for w in re.findall(r"[\w'.-]+", low) for n in other_names.get(w, ())}
+    found = [(low.find(n.lower()), n) for n in candidates
              if n not in roster_names and re.search(rf"\b{re.escape(n.lower())}\b", low)
              and not re.search(rf"\bafter {re.escape(n.lower())}\b", low)]    # "After Zaheer Khan, CSK to appoint..."
     if found:
@@ -811,6 +852,7 @@ def get_squads(cfg, db, m):
             return players
     players = parse_squads(http_get(cfg["squads_url"].format(id=m["id"])))
     db.execute("insert or replace into match_squads values(?,?,?,?)", (m["id"], time.time(), m["state"], json.dumps(players)))
+    remember_players(db, players)
     db.execute("delete from match_squads where ts < ?", (time.time() - 7 * 86400,)); db.commit()
     return players
 
@@ -1226,6 +1268,66 @@ li{{margin:.4rem 0}}li.breaking b{{color:#c00}}li.important b{{color:#d97706}}sm
     with open(path or os.path.join(HERE, "dashboard.html"), "w", encoding="utf-8") as f:
         f.write(page)
 
+# ---------- cricketer names ----------
+def refresh_cricketers(cfg, path=None, pause=0.25):
+    """Write cricketers.json: every cricketer Cricbuzz lists, so a headline naming someone else ("Shadab Khan") isn't
+    tagged as our player. Sources: the team pages (international and major teams; most others list nobody) and one
+    squad page per team in every series of this year and last. About 2,000 pages and 30+ minutes, so it is run by
+    hand now and then (python tracker.py --refresh-names); squads read on match days add new names in between.
+    Names are only ever added: a retired player is still someone else, and a page that failed this time was read before."""
+    names = {}
+    def add(pid, name):
+        if " " in name.strip():             # a single name ("Ashraful") can't spell out anyone in a headline
+            names[pid] = name.strip()
+    teams = set()
+    for url in cfg["team_index_urls"]:
+        teams |= set(re.findall(r"/cricket-team/([a-z0-9-]+)/(\d+)", http_get(url)))
+    for slug, tid in sorted(teams):
+        try:
+            for p in parse_roster_page(http_get(cfg["team_players_url"].format(slug=slug, id=tid))):
+                add(p["id"], p["name"])
+        except Exception as e:
+            print(f"[warn] team {slug}: {e}", file=sys.stderr)
+        time.sleep(pause)
+    series = set()
+    year = datetime.now(IST).year
+    for y in (year - 1, year):              # the season archive lists every series, not only the IPL
+        series |= set(re.findall(r"/cricket-series/(\d+)/", http_get(cfg["ipl_archive_url"].format(year=y))))
+    for sid in sorted(series, key=int):
+        try:
+            matches = [m for m in parse_live_scores(http_get(cfg["series_matches_url"].format(sid=sid)))
+                       if m["series_id"] == sid]
+        except Exception as e:
+            print(f"[warn] series {sid}: {e}", file=sys.stderr)
+            continue
+        todo = {team for m in matches for team, _ in m["teams"]}
+        started = lambda m: m["phase"] in ("live", "paused", "finished")    # their squads are published
+        for m in sorted(matches, key=lambda m: not started(m)):
+            if not todo & {team for team, _ in m["teams"]}:
+                continue
+            time.sleep(pause)
+            try:
+                squads = parse_squads(http_get(cfg["squads_url"].format(id=m["id"])))
+            except Exception as e:
+                print(f"[warn] squads {m['id']}: {e}", file=sys.stderr)
+                continue
+            for pid, p in squads.items():
+                add(pid, p["name"])
+            if squads:
+                todo -= {team for team, _ in m["teams"]}
+    path, found = path or os.path.join(HERE, "cricketers.json"), set(names.values())
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = set(json.load(f))
+    except (OSError, ValueError):
+        old = set()
+    if len(found) < len(old) / 2:
+        print(f"[warn] only {len(found)} names found on Cricbuzz (list has {len(old)}): did its pages change?",
+              file=sys.stderr)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(sorted(old | found), f, ensure_ascii=False, indent=0)
+    return len(old | found)
+
 # ---------- main loop ----------
 def run_cycle(cfg, db, state, dry_run, first_run):
     global outbox_db
@@ -1275,8 +1377,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--once", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-warmup", action="store_true", help="alert even on stories found in the first run")
+    ap.add_argument("--refresh-names", action="store_true", help="rebuild cricketers.json from Cricbuzz (30+ min)")
     a = ap.parse_args()
-    cfg = load_config(); db = db_connect(); state = {}
+    cfg = load_config()
+    if a.refresh_names:
+        print(f"cricketers.json: {refresh_cricketers(cfg)} names")
+        return
+    db = db_connect(); state = {}
     fresh_db = not db.execute("select 1 from seen limit 1").fetchone()
     first = fresh_db and not a.no_warmup
     while True:

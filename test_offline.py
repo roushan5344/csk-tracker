@@ -396,7 +396,7 @@ t.datetime = FakeNow
 t.process_items(cfg, ndb, t.parse_rss(TOI_RSS), names, True, [], first_run=False)
 t.process_items(cfg, ndb, t.parse_rss(TOI_RSS), names, True, [], first_run=False)   # seen again: not re-read
 assert fetched.count(TOI_URL) == 1, fetched
-assert ndb.execute("select player, day, days from news_fixtures").fetchall() == [("Ayush Mhatre", "2026-09-29", 2)]
+assert ndb.execute("select player, day, days from news_matches").fetchall() == [("Ayush Mhatre", "2026-09-29", 2)]
 ndb.execute("insert into kv values('digest:2026-09-28', '1')"); ndb.commit()   # Monday's 8 AM digest already went out
 sent[:] = []
 t.check_matches(cfg, ndb, roster, True)                        # 20:00 Monday: found after the digest -> sent now
@@ -415,11 +415,47 @@ t.check_matches(cfg, ndb, roster, True)
 assert len(sent) == 3 and "TODAY (Wed 30 Sep)\n• Match per news" in sent[2] and "Ayush Mhatre" in sent[2], sent[2]
 hit = t.news_fixture_hits(cfg, ndb, NOW[0])[0]
 assert t.describe(hit, NOW[0])[1] == "PLAYING TODAY, per news (not an official fixture)"
-NOW[0] = datetime(2026, 10, 1, 8, 5, tzinfo=t.IST)            # match over
+
+# The article is updated (real: the practice match became a Kanga League game on Friday): one correction.
+TOI_PAGE = ("<html><body><p>MUMBAI: In a major boost to Mumbai ahead of the 2026-27 Ranji Trophy season, opener Ayush "
+            "Mhatre, out of action since he suffered a bad hamstring injury, will play his first competitive match in "
+            "almost five months.</p><p>He will turn out for Sainath Cricket Club in a Kanga League 'B Division game on "
+            "Friday,\" Ayush's father Yogesh Mhatre told TOI on Monday.</p></body></html>")
+NOW[0] = datetime(2026, 9, 30, 12, 0, tzinfo=t.IST)
+t.check_matches(cfg, ndb, roster, True)
+NOW[0] = datetime(2026, 9, 30, 13, 0, tzinfo=t.IST)
+t.check_matches(cfg, ndb, roster, True)                        # no repeat
+assert len(sent) == 4 and sent[3].startswith(
+    "✏️ CORRECTION: Ayush Mhatre\nEarlier alert said: match per news, 2-day from Tue 29 Sep.\n"
+    "The article now says: Fri 2 Oct.\n“Back from hamstring injury, Ayush Mhatre to play his first competitive "
+    "match in 5 months” (timesofindia.indiatimes.com)\n" + TOI_URL), sent[3:]
+NOW[0] = datetime(2026, 10, 1, 8, 5, tzinfo=t.IST)            # Thursday's digest: Friday's game, no extra NEW MATCH
+t.check_matches(cfg, ndb, roster, True)
+assert len(sent) == 5 and sent[4].startswith("📅 CSK PLAYERS' MATCHES\n\nTOMORROW (Fri 02 Oct)\n• Match per news"), sent[4:]
+# The article drops the match altogether: a second correction.
+TOI_PAGE = "<html><body><p>Ayush Mhatre has been training at the Mumbai Cricket Association's facility.</p></body></html>"
+NOW[0] = datetime(2026, 10, 1, 12, 0, tzinfo=t.IST)
+t.check_matches(cfg, ndb, roster, True)
+assert len(sent) == 6 and sent[5].startswith(
+    "✏️ CORRECTION: Ayush Mhatre\nEarlier alert said: match per news, Fri 2 Oct.\n"
+    "The article no longer mentions this match, so ignore the earlier alert."), sent[5:]
 assert t.news_fixture_hits(cfg, ndb, NOW[0]) == []
 t.datetime = real_now
-samples.append(sent[0])
-print("news-only matches OK: practice match found from the article, held for the digest, both days listed")
+samples += [sent[0], sent[3]]
+print("news-only matches OK: found from the article, held for the digest, both days listed, corrections sent")
+
+# GitHub's saved state from before corrections (old news_fixtures table) is carried over, including what was told.
+odb_path = os.path.join(tmp, "old_state.db")
+old = t.sqlite3.connect(odb_path)
+old.execute("create table news_fixtures(player text, day text, days integer, title text, link text, source text,"
+            " primary key(player, day))")
+old.execute("create table kv(k text primary key, v text)")
+old.execute("insert into news_fixtures values('Ayush Mhatre', '2026-09-29', 2, 'Back from hamstring injury', ?, 'TOI')",
+            (TOI_URL,))
+old.execute("insert into kv values('announced:news:Ayush Mhatre:2026-09-29', '1')"); old.commit(); old.close()
+assert t.db_connect(odb_path).execute("select player, day, days, told, checked, status from news_matches").fetchall() == \
+    [("Ayush Mhatre", "2026-09-29", 2, "2026-09-29|2", 0, "active")]
+print("old saved news-only matches carried over")
 
 # Polling: last-run times are saved in state.db, so a second --once run (fresh process) skips roster and news.
 t.HERE, calls = tmp, []                                       # keep run_cycle's dashboard.html in the temp folder

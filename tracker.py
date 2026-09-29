@@ -137,10 +137,20 @@ def db_connect(path=None):
     db.execute("create table if not exists squad(id text primary key, name text)")
     db.execute("create table if not exists kv(k text primary key, v text)")
     db.execute("create table if not exists match_squads(match_id text primary key, ts real, state text, players text)")
-    # matches only the news mentions (practice games, trials), and which stories were already checked for one
-    db.execute("create table if not exists news_fixtures(player text, day text, days integer, title text, link text,"
-               " source text, primary key(player, day))")
+    # Matches only the news mentions (practice games, trials), one row per player and story. "told" is the day we
+    # last announced ("2026-09-29|2"), so a re-read that finds a new day can send a correction.
+    db.execute("create table if not exists news_matches(player text, link text, title text, source text, pub real,"
+               " day text, days integer, checked real, told text, status text, primary key(player, link))")
     db.execute("create table if not exists news_checked(key text primary key, ts real)")
+    if db.execute("select 1 from sqlite_master where name='news_fixtures'").fetchone():   # table before corrections
+        for player, day, days, title, link, source in db.execute(
+                "select player, day, days, title, link, source from news_fixtures").fetchall():
+            pub = db.execute("select coalesce(pub, ts) from seen where title like ? || '%'", (title,)).fetchone()
+            told = db.execute("select 1 from kv where k=?", (f"announced:news:{player}:{day}",)).fetchone()
+            db.execute("insert or ignore into news_matches values(?,?,?,?,?,?,?,?,?,?)",
+                       (player, link, title, source, pub[0] if pub else time.time(), day, days, 0,
+                        f"{day}|{days}" if told else None, "active"))
+        db.execute("drop table news_fixtures"); db.commit()
     # best rank sent per player and kind of event, so other publishers' copies of a story aren't sent again
     db.execute("create table if not exists story_events(player text, event text, rank integer, ts real,"
                " primary key(player, event))")
@@ -425,20 +435,62 @@ def record_news_fixture(db, it, tags, roster_names):
                     article = ""
             found = news_match_days(article, p, it["when"])
         if found:
-            db.execute("insert or ignore into news_fixtures values(?,?,?,?,?,?)",
-                       (p, found[0].isoformat(), found[1], re.sub(r"\s[-|]\s[^-|]+$", "", it["title"]), it["link"],
-                        it["source"] or urllib.parse.urlparse(it["link"]).netloc))
+            db.execute("insert or ignore into news_matches values(?,?,?,?,?,?,?,?,?,?)",
+                       (p, it["link"], re.sub(r"\s[-|]\s[^-|]+$", "", it["title"]),
+                        it["source"] or urllib.parse.urlparse(it["link"]).netloc, it["when"].timestamp(),
+                        found[0].isoformat(), found[1], datetime.now(IST).timestamp(), None, "active"))
     db.execute("delete from news_checked where ts < ?", (time.time() - 10 * 86400,))
     db.commit()
 
+def days_text(day, days):
+    d = date.fromisoformat(day)
+    return f"{int(days)}-day from {d:%a} {d.day} {d:%b}" if int(days) > 1 else f"{d:%a} {d.day} {d:%b}"
+
+def recheck_news_matches(cfg, db, now, dry_run):
+    """Articles get updated ("practice match from Tuesday" became "Kanga League game on Friday"), so the article
+    behind each news-only match is read again every 3 hours until the match is over. A new day, or no match at all,
+    updates the entry; if we had already announced it, a correction is sent."""
+    rows = db.execute("select player, link, title, source, pub, day, days, told from news_matches"
+                      " where status='active' and checked < ?", (now.timestamp() - 3 * 3600,)).fetchall()
+    for player, link, title, source, pub, day, days, told in rows:
+        if "news.google.com" in link or date.fromisoformat(day) + timedelta(days=days - 1) < now.date():
+            continue
+        try:
+            found = news_match_days(article_text(link), player, datetime.fromtimestamp(pub, IST))
+        except Exception as e:
+            print(f"[warn] re-reading {link} failed: {e}", file=sys.stderr)
+            continue
+        where = (player, link)
+        db.execute("update news_matches set checked=? where player=? and link=?", (now.timestamp(), *where))
+        new = (found[0].isoformat(), found[1]) if found else None
+        if new == (day, days):
+            db.commit()
+            continue
+        if new:
+            db.execute("update news_matches set day=?, days=? where player=? and link=?", (*new, *where))
+        else:
+            db.execute("update news_matches set status='dropped' where player=? and link=?", where)
+        if told:                            # we told the user about the old day: correct it
+            was = days_text(*told.split("|"))
+            if new:
+                db.execute("update news_matches set told=? where player=? and link=?", (f"{new[0]}|{new[1]}", *where))
+                db.execute("insert or replace into kv values(?,?)", (f"announced:news:{player}:{new[0]}", "1"))
+                says = f"The article now says: {days_text(*new)}."
+            else:
+                says = "The article no longer mentions this match, so ignore the earlier alert."
+            send_alert(cfg, f"✏️ CORRECTION: {player}\nEarlier alert said: match per news, {was}.\n{says}\n"
+                            f"“{title}” ({source})\n{link}", dry_run)
+        db.commit()
+
 def news_fixture_hits(cfg, db, now):
     """Match hits for news-only matches running today or starting tomorrow (see record_news_fixture)."""
-    today, hour, out = now.date(), cfg["alert"].get("match_digest_hour", 8), []
+    today, hour, out, seen_days = now.date(), cfg["alert"].get("match_digest_hour", 8), [], set()
     for player, day, days, title, link, source in db.execute(
-            "select player, day, days, title, link, source from news_fixtures"):
+            "select player, day, days, title, link, source from news_matches where status='active' order by pub"):
         first = date.fromisoformat(day)
-        if first + timedelta(days=days - 1) < today or first > today + timedelta(days=1):
+        if first + timedelta(days=days - 1) < today or first > today + timedelta(days=1) or (player, day) in seen_days:
             continue
+        seen_days.add((player, day))        # two stories about the same match: list it once
         shown = max(first, today)
         m = {"id": f"news:{player}:{day}", "phase": "news", "first": first, "days": days,
              "start": datetime(shown.year, shown.month, shown.day, hour, tzinfo=IST),   # held for the digest
@@ -752,9 +804,16 @@ def check_matches(cfg, db, roster, dry_run):
     for h in hits:                          # before the XI is out, flag recent injury news (the XI itself is definitive)
         if h["role"] in ("squad", "expected"):
             h["injury"] = injury_news(db, h["player"])
+    recheck_news_matches(cfg, db, now, dry_run)     # articles change; correct what we already announced
     hits += news_fixture_hits(cfg, db, now)         # practice games, trials: matches only the news mentions
     kv = lambda k: db.execute("select 1 from kv where k=?", (k,)).fetchone()
     mark = lambda k: db.execute("insert or replace into kv values(?,?)", (k, "1"))
+    def announce(h):
+        mark(f"announced:{h['match']['id']}")
+        m = h["match"]
+        if m["phase"] == "news":            # remember what we told, so a later change in the article is corrected
+            db.execute("update news_matches set told=? where player=? and day=? and status='active'",
+                       (f"{m['first'].isoformat()}|{m['days']}", h["player"], m["first"].isoformat()))
 
     # 1. PLAYING NOW: once per match, when it is live and a CSK player is in the XI (or the squad, before the XI is out).
     live_hits = {}
@@ -780,7 +839,7 @@ def check_matches(cfg, db, roster, dry_run):
     if now >= digest_at and not kv(f"digest:{now:%Y-%m-%d}"):
         mark(f"digest:{now:%Y-%m-%d}")
         for h in coming:
-            mark(f"announced:{h['match']['id']}")
+            announce(h)
         db.commit()
         if coming:
             send_alert(cfg, "📅 CSK PLAYERS' MATCHES\n\n" + day_sections(coming, now), dry_run)
@@ -792,7 +851,7 @@ def check_matches(cfg, db, roster, dry_run):
            and not kv(f"announced:{h['match']['id']}") and (digest_done or h["match"]["start"] < digest_at)]
     if new:
         for h in new:
-            mark(f"announced:{h['match']['id']}")
+            announce(h)
         db.commit()
         send_alert(cfg, "📅 NEW MATCH FOR CSK PLAYERS\n\n" + day_sections(new, now), dry_run)
     return hits

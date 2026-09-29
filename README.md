@@ -43,7 +43,9 @@ yet, it uses the previous match of the same series and marks the player "expecte
 - **Matches only the news mentions** (practice games, trials): a story saying a CSK player "will play / set to play /
   to feature" with a day ("today", "Tuesday", "30 September", counted from the publish date) goes into the digest as
   "Match per news, not an official fixture", with the headline. If the headline and summary give no day, the article
-  itself is read (not possible for Google News links). "Two-day" etc. matches are listed on each day.
+  itself is read (not possible for Google News links). "Two-day" etc. matches are listed on each day. Articles get
+  updated, so each one is re-read every 3 hours until its match is over: if the day changed or the match is gone
+  and it was already announced, a "✏️ CORRECTION" alert is sent.
 All times are IST. Run `python test_offline.py` after changes; it uses real Cricbuzz/Google News samples.
 
 ## Known limits

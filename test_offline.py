@@ -600,6 +600,29 @@ class TestDuplicates(Base):
         self.assertEqual([s["text"].splitlines()[0] for s in self.sent],
                          ["⚠️ IMPORTANT [RUMOUR] | CSK", "🚨 BREAKING | CSK"])
 
+    MOHIT_DAY = [   # real, 29 Sep 2026, in publish order; five of them don't name him
+        "Mohit Sharma likely to join Chennai Super Kings as bowling coach ahead of IPL 2027",
+        "Mohit Sharma joins CSK coaching setup: Ex-pacer named bowling coach; moves on Zak's recommendation",
+        "CSK set to rope in IPL 2014's purple cap winner as new bowling coach: Report",
+        "Kasi Viswanathan Confirms CSK In Talks With Mohit Sharma For Bowling Coach Role - EXCLUSIVE",
+        "Mohit Sharma set to join CSK as bowling coach - The Times of India",
+        "Mohit Sharma set for CSK return in new role ahead of 2027 IPL season - Cricket Addictor",
+        "After Zaheer Khan, CSK To Appoint Former India Pacer As Bowling Coach - News18",
+        "Mohit Sharma joins Chennai Super Kings as bowling coach - CricTracker",
+        "India star Mohit Sharma to join Dhoni's CSK as new bowling coach for IPL 2027 - News24Online",
+        "Mohit Sharma likely to become CSK bowling coach ahead of IPL 2027 - Sports Tiger",
+        "CSK set to appoint India's 2015 World Cup pacer as bowling coach ahead of IPL 2027 - Sportskeeda",
+        "Mohit Sharma set to join CSK in this role: Details - newsbytesapp.com",
+        "After Zaheer Khan, THIS star player from MS Dhoni's CSK join team as bowling coach for IPL 2027 season - India.com",
+        "Major update on CSK’s new bowling coach for IPL 2027 - Khel Now"]
+    HUSSEY = "Michael Hussey’s future in doubt as CSK eyes new batting coach - Cricket Addictor"
+
+    def test_reports_that_dont_name_the_coach_are_grouped_by_the_job(self):
+        latest = self.process(rss(self.MOHIT_DAY + [self.HUSSEY]))
+        self.assertEqual([i["title"] for i in latest],                      # 14 reports -> first one + "joins"
+                         [self.MOHIT_DAY[0], self.MOHIT_DAY[1], self.HUSSEY])   # another coaching job is still sent
+        self.assertIsNone(t.story_person(self.MOHIT_DAY[6], self.names))    # "After Zaheer Khan" isn't about him
+
     def test_who_a_team_story_is_about(self):
         self.assertEqual(t.story_person("IPL: Mohit Sharma set to join CSK as bowling coach", self.names), "Mohit Sharma")
         self.assertEqual(t.story_person("Washington Sundar CSK Trade Rumor: Is It Actually Happening?", self.names),

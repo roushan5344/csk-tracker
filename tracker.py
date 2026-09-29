@@ -403,21 +403,30 @@ def mark_seen(db, title, when=None):
 def story_event(title):
     return next((e for e, p in STORY_EVENTS if re.search(rf"\b({p})\b", title, re.I)), None)
 
-NOT_A_PERSON = {"ipl", "csk", "chennai", "super", "kings", "india", "indian", "star", "former", "ex", "watch", "big",
-                "double", "breaking", "report", "reports", "sports", "news", "team", "south", "west", "new", "live"}
+NOT_A_PERSON = {"after", "ipl", "csk", "chennai", "super", "kings", "india", "indian", "star", "former", "ex", "watch",
+                "big", "double", "breaking", "report", "reports", "sports", "news", "team", "south", "west", "new", "live"}
 
 def story_person(title, roster_names):
     """The person a CSK team story is about (Mohit Sharma in "Mohit Sharma to join CSK as bowling coach"): the first
     known cricketer or namesake named in it who isn't a CSK player, else a name leading the headline."""
     low = title.lower().replace("’", "'")
     found = [(low.find(n.lower()), n) for v in other_names.values() for n in v
-             if n not in roster_names and re.search(rf"\b{re.escape(n.lower())}\b", low)]
+             if n not in roster_names and re.search(rf"\b{re.escape(n.lower())}\b", low)
+             and not re.search(rf"\bafter {re.escape(n.lower())}\b", low)]    # "After Zaheer Khan, CSK to appoint..."
     if found:
         return min(found)[1]
     m = re.match(r"^(?:[^:]{0,25}:\s*)?([A-Z][a-z]+) ([A-Z][a-z]+)\b", title)   # "IPL: Mohit Sharma set to..."
     if m and m.group(1).lower() not in NOT_A_PERSON and m.group(2).lower() not in NOT_A_PERSON:
         return f"{m.group(1)} {m.group(2)}"
     return None
+
+def coach_job(it, tags, roster_names):
+    """("CSK", "bowling coach") for a team story about a coaching job, so reports that don't name the person
+    ("CSK set to appoint India's 2015 World Cup pacer as bowling coach") are grouped with the ones that do."""
+    m = re.search(r"\b(head|bowling|batting|fielding|spin|pace|assistant) coach\b", it["title"], re.I)
+    if it.get("official") or not m or any(p in roster_names for p in tags):
+        return None
+    return ("CSK", f"{m.group(1).lower()} coach")
 
 def story_keys(it, tags, roster_names):
     """What a story is about, to spot other publishers' copies: (CSK player, kind of event) for player stories;
@@ -430,7 +439,8 @@ def story_keys(it, tags, roster_names):
         ev = story_event(it["title"])
         return [(p, ev) for p in players] if ev else None
     person = story_person(it["title"], roster_names)
-    return [(person, "any")] if person else None
+    job = coach_job(it, tags, roster_names)
+    return [(person, "any")] if person else [job] if job else None
 
 def repeat_story(db, it, tags, imp, roster_names):
     """The same story from another publisher: everyone it's about already had a story of this kind in the last
@@ -446,7 +456,9 @@ def repeat_story(db, it, tags, imp, roster_names):
     return True
 
 def remember_story(db, it, tags, imp, roster_names):
-    for who, ev in story_keys(it, tags, roster_names) or []:
+    keys = story_keys(it, tags, roster_names) or []
+    job = coach_job(it, tags, roster_names)              # a named report also covers the unnamed ones
+    for who, ev in keys + ([job] if job and job not in keys else []):
         row = db.execute("select rank from story_events where player=? and event=? and ts>=?",
                          (who, ev, time.time() - 86400)).fetchone()
         db.execute("insert or replace into story_events values(?,?,?,?)",

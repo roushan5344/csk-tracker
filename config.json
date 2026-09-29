@@ -11,7 +11,8 @@
     "news": 600,
     "player_news": 900,
     "match_day_live": 90,
-    "roster": 86400
+    "roster": 86400,
+    "performance": 3600
   },
   "team_queries": ["Chennai Super Kings", "CSK IPL", "MS Dhoni"],
   "news_search_urls": [
@@ -28,6 +29,7 @@
   "roster_sources": ["https://www.cricbuzz.com/cricket-team/chennai-super-kings/58/players"],
   "live_scores_url": "https://www.cricbuzz.com/cricket-match/live-scores",
   "squads_url": "https://www.cricbuzz.com/cricket-match-squads/{id}",
+  "scorecard_url": "https://www.cricbuzz.com/live-cricket-scorecard/{id}",
   "schedule_url": "https://www.cricbuzz.com/cricket-schedule/upcoming-series/all",
   "series_matches_url": "https://www.cricbuzz.com/cricket-series/{sid}/x/matches",
   "ipl_archive_url": "https://www.cricbuzz.com/cricket-scorecard-archives/{year}",

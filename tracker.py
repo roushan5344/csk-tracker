@@ -8,7 +8,7 @@ Usage:
 Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable Telegram alerts.
 """
 import argparse, hashlib, html, json, os, re, sqlite3, sys, time
-import urllib.parse, urllib.request
+import urllib.error, urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -16,6 +16,8 @@ from email.utils import parsedate_to_datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 IST = timezone(timedelta(hours=5, minutes=30))
 UA = "Mozilla/5.0 (compatible; CSKTracker/1.0)"
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+TELEGRAM_LIMIT = 4000                       # Telegram rejects messages over 4096 characters
 RANKS = {"minor": 0, "important": 1, "breaking": 2}
 
 BREAKING = (r"\b(retire[sd]?|retirement|ruled out|steps? down|sacked|released|retained|traded|signs|signed|appointed"
@@ -25,9 +27,10 @@ BREAKING = (r"\b(retire[sd]?|retirement|ruled out|steps? down|sacked|released|re
 IMPORTANT = (r"\b(injur\w*|fitness|strain|niggle|side issue|hamstring|scans?|surgery|return\w*|comeback|back from|selected"
              r"|goes down|went down|limp\w* off|left the field|leaves the field|retired hurt|concussion|withdr[ae]w\w*"
              r"|squad|dropped|named|playing xi|doubt\w*|contract|auction|trade|captain\w*|interview|milestone|record"
-             r"|century|hundred|ton|fifty|half-century|five-for|fifer|four-for|\d-fer)\b")
+             r"|century|hundred|ton|fifty|half-century|five-for|fifer|four-for|\d-fer"
+             r"|hat-trick|player of the match|man of the match|potm|haul|\d+ wickets|one-handed|blinder|screamer"
+             r"|stunning|jaw-dropping|masterclass)\b")     # standout performances
 RUMOUR = r"\b(reportedly|rumou?rs?|speculat\w*|sources say|likely to|set to|could|may|might|claims? that|unconfirmed|tipped)\b"
-CLICKBAIT = r"you won't believe|shocking|viral|goes wild|breaks the internet|netizens|\bmemes?\b|jaw-dropping|watch:"
 # Cricbuzz match/team pages that Google News lists as if they were stories.
 NOT_ARTICLE = (r" - (squads|match info|live scores?|scorecard|(full )?commentary|points table|schedule|results)\b"
                r"|\b(live (full )?scorecard|full scorecard|live (cricket )?scores?|match info|points table|squad ipl \d{4})\b")
@@ -66,7 +69,8 @@ STORY_EVENTS = [
                r"|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|doubtful|miss(es|ed)? (the )?(rest"
                r"|remainder|series|match|game|tour|odi|test|final)|goes down|went down|limp\w* off|retired hurt|concussion"),
     ("performance", r"centur(y|ies)|hundred|fifty|fifties|\d+ wickets?|five-for|fifer|four-for|\d-fer|hat-trick|record"
-                    r"|\d+ runs|catch|knock|sixes|haul|masterclass|player of the match|potm"),
+                    r"|\d+ runs|catch|knock|sixes|haul|masterclass|player of the match|potm|man of the match"
+                    r"|stunning|jaw-dropping|one-handed|blinder|screamer|magic delivery|brilliant|spectacular"),
 ]
 # Headlines where a tracked player is only a yardstick for someone else ("Gill joins MS Dhoni in elite list").
 # {s} is the player's surname, lower case.
@@ -92,10 +96,20 @@ def load_config():
     with open(os.path.join(HERE, "config.json"), encoding="utf-8") as f:
         return json.load(f)
 
-def http_get(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
+def http_get(url, timeout=20, ua=UA, tries=2):
+    """Fetch a page, retrying once after a dropped connection, timeout or server error (not after 403/404)."""
+    for attempt in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept-Language": "en"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == tries - 1:
+                raise
+        except Exception:
+            if attempt == tries - 1:
+                raise
+        time.sleep(2)
 
 def norm(s):
     return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
@@ -154,10 +168,71 @@ def db_connect(path=None):
     # best rank sent per player and kind of event, so other publishers' copies of a story aren't sent again
     db.execute("create table if not exists story_events(player text, event text, rank integer, ts real,"
                " primary key(player, event))")
+    db.execute("create table if not exists outbox(id integer primary key autoincrement, text text, silent integer,"
+               " created real)")            # Telegram messages that failed, retried next run
+    db.execute("create table if not exists news_feed(key text primary key, title text, link text, source text,"
+               " summary text, pub real, seen real, tags text, importance text, rumour integer)")   # dashboard news
+    db.execute("create table if not exists series_cache(sid text primary key, ts real, matches text)")
+    # Matches we told the user a CSK player is in, and the scorecard figures we last sent for them.
+    db.execute("create table if not exists tracked_matches(match_id text primary key, title text, players text,"
+               " start real, last_poll real, last_text text, final integer default 0, added real)")
+    db.execute("create table if not exists performances(match_id text, player text, line text, final integer,"
+               " ts real, primary key(match_id, player))")
     return db
 
 # ---------- alerts ----------
 alerts_sent = 0                             # counts alerts, so a cycle knows whether anything new went out
+outbox_db = None                            # state.db while a cycle runs: undelivered messages wait there
+last_send = 0.0                             # time of the last Telegram message, to pace them
+
+def split_message(text, limit=TELEGRAM_LIMIT):
+    """Telegram's size limit: split at line breaks into parts of at most `limit` characters."""
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:                    # one very long line: hard split
+            if cur:
+                parts.append(cur)
+                cur = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            parts.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        parts.append(cur)
+    return parts
+
+def telegram_post(token, chat, text, silent):
+    """Send one message, at most one per second (Telegram's per-chat pace). Waits and retries when Telegram says
+    "too many requests", retries once after a network error. True once Telegram has accepted it."""
+    global last_send
+    data = urllib.parse.urlencode({"chat_id": chat, "text": text, "disable_web_page_preview": "false",
+                                   "disable_notification": "true" if silent else "false"}).encode()
+    for attempt in range(3):
+        wait = last_send + 1.1 - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        last_send = time.time()
+        try:
+            urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data, timeout=20)
+            return True
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                try:
+                    retry = json.loads(e.read().decode()).get("parameters", {}).get("retry_after", 5)
+                except Exception:
+                    retry = 5
+                time.sleep(min(retry, 60))
+                continue
+            print(f"Telegram send failed: {e}", file=sys.stderr)
+            if e.code < 500:
+                return False                # bad token, chat or message: retrying now won't help
+        except Exception as e:
+            print(f"Telegram send failed: {e}", file=sys.stderr)
+        time.sleep(2)
+    return False
 
 def send_alert(cfg, text, dry_run=False, silent=False):
     global alerts_sent
@@ -169,12 +244,27 @@ def send_alert(cfg, text, dry_run=False, silent=False):
     if dry_run or not (token and chat):
         print("\n--- ALERT (not sent: dry-run or Telegram not configured) ---\n" + text + "\n")
         return
-    data = urllib.parse.urlencode({"chat_id": chat, "text": text, "disable_web_page_preview": "false",
-                                   "disable_notification": "true" if silent else "false"}).encode()
-    try:
-        urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data, timeout=20)
-    except Exception as e:
-        print("Telegram send failed:", e, file=sys.stderr)
+    parts = split_message(text)
+    for i, part in enumerate(parts):
+        if not telegram_post(token, chat, part, silent):
+            if outbox_db is not None:       # keep the rest for the next run, so nothing is lost
+                outbox_db.executemany("insert into outbox(text, silent, created) values(?,?,?)",
+                                      [(p, int(silent), time.time()) for p in parts[i:]])
+                outbox_db.commit()
+                print(f"[warn] {len(parts) - i} message part(s) kept to retry next run", file=sys.stderr)
+            return
+
+def flush_outbox(cfg, db):
+    """Deliver messages that failed earlier, oldest first; drop any older than a day."""
+    token = os.environ.get(cfg["alert"]["telegram_bot_token_env"], "")
+    chat = os.environ.get(cfg["alert"]["telegram_chat_id_env"], "")
+    db.execute("delete from outbox where created < ?", (time.time() - 86400,))
+    for mid, text, silent in db.execute("select id, text, silent from outbox order by id").fetchall():
+        if not (token and chat) or not telegram_post(token, chat, text, bool(silent)):
+            break
+        db.execute("delete from outbox where id=?", (mid,))
+        db.commit()
+    db.commit()
 
 # ---------- news ----------
 def parse_rss(xml_text):
@@ -210,9 +300,9 @@ def one_line(desc, title, src):
 
 
 def classify(title):
+    """(rank, rumour). Clickbait-style headlines ("WATCH: ...", "jaw-dropping catch") are kept: they are often a
+    player's standout moment. Other publishers' copies are dropped by the same-story grouping."""
     t = title.lower()
-    if re.search(CLICKBAIT, t):
-        return None
     imp = "breaking" if re.search(BREAKING, t) else "important" if re.search(IMPORTANT, t) else "minor"
     rumour = bool(re.search(RUMOUR, t))
     if rumour and imp == "breaking":
@@ -347,13 +437,11 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
             tags = [it["official"]] + [x for x in tags if x != "CSK"]
         if not tags:
             continue
-        c = classify(it["title"])
-        if c is None:
-            continue
         record_news_fixture(db, it, tags, roster_names)     # stories seen before too: each is checked once
         if is_duplicate(db, it["title"]):
             continue
-        imp, rumour = c[0], c[1] and not it.get("official")
+        imp, rumour = classify(it["title"])
+        rumour = rumour and not it.get("official")
         mark_seen(db, it["title"], it["when"])
         if it["when"] and it["when"] < fresh_after:     # seen for the first time but over a day old: record only
             continue
@@ -363,6 +451,11 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
             continue
         remember_story(db, it, tags, imp, roster_names)
         latest.append({**it, "tags": tags, "importance": imp, "rumour": rumour})   # dashboard = what alerts cover
+        db.execute("insert or ignore into news_feed values(?,?,?,?,?,?,?,?,?,?)",   # kept, so a restart can't empty it
+                   (hashlib.sha1(norm(it["title"]).encode()).hexdigest(), it["title"], it["link"], it["source"],
+                    it.get("summary") or "", it["when"].timestamp() if it["when"] else None, time.time(),
+                    json.dumps(tags), imp, int(rumour)))
+        db.commit()
         if first_run:                       # don't spam old stories on first start
             continue
         icon = {"breaking": "🚨", "important": "⚠️", "minor": "📰"}[imp]
@@ -406,8 +499,15 @@ def news_match_days(text, player, pub):
     return None
 
 def article_text(url):
-    """Page text with one line per paragraph or block, so a header can't run into the first sentence."""
-    page = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", http_get(url))
+    """Page text with one line per paragraph or block, so a header can't run into the first sentence.
+    Some sites (Cricinfo) block one identity or the other at random, so a 403 is retried with the other one."""
+    try:
+        page = http_get(url)
+    except urllib.error.HTTPError as e:
+        if e.code != 403:
+            raise
+        page = http_get(url, ua=BROWSER_UA)
+    page = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", page)
     page = re.sub(r"(?i)</(p|div|h[1-6]|li|td|section|article|header)>|<br\s*/?>", "\n", page)
     return re.sub(r"[^\S\n]+", " ", html.unescape(re.sub(r"<[^>]+>", " ", page)))
 
@@ -675,12 +775,24 @@ def get_squads(cfg, db, m):
     db.execute("delete from match_squads where ts < ?", (time.time() - 7 * 86400,)); db.commit()
     return players
 
+def series_matches(cfg, db, sid):
+    """A series' matches ({id, phase, start}), cached for 30 minutes."""
+    row = db.execute("select ts, matches from series_cache where sid=?", (sid,)).fetchone()
+    if row and time.time() - row[0] < 1800:
+        return [{**x, "start": datetime.fromtimestamp(x["start"], IST) if x["start"] else None} for x in json.loads(row[1])]
+    found = [x for x in parse_live_scores(http_get(cfg["series_matches_url"].format(sid=sid))) if x["series_id"] == sid]
+    db.execute("insert or replace into series_cache values(?,?,?)", (sid, time.time(), json.dumps(
+        [{"id": x["id"], "state": x["state"], "phase": x["phase"], "start": x["start"].timestamp() if x["start"] else None}
+         for x in found])))
+    db.commit()
+    return [{"id": x["id"], "state": x["state"], "phase": x["phase"], "start": x["start"]} for x in found]
+
 def expected_squads(cfg, db, m):
     """Squad not published yet: take each team's squad from its latest started match in the same series
     (e.g. the 1st ODI squad for the 2nd ODI). These players are marked "expected"."""
     wanted = {short for _, short in m["teams"] if short}
-    earlier = [x for x in parse_live_scores(http_get(cfg["series_matches_url"].format(sid=m["series_id"])))
-               if x["series_id"] == m["series_id"] and x["id"] != m["id"] and x["phase"] in ("live", "paused", "finished")
+    earlier = [x for x in series_matches(cfg, db, m["series_id"])
+               if x["id"] != m["id"] and x["phase"] in ("live", "paused", "finished")
                and x["start"] and m["start"] and x["start"] < m["start"]]
     out = {}
     for x in sorted(earlier, key=lambda x: x["start"], reverse=True)[:6]:
@@ -707,7 +819,8 @@ def players_in_matches(matches, roster, squads):
                 mine = next((i for i, tm in enumerate(m.get("teams", [])) if tm[1] == e["team"]), None)
                 team = m["teams"][mine][0] if mine is not None else e["team"]
                 opponent = m["teams"][1 - mine][0] if mine is not None else ""
-                hits.append({"player": p["name"], "team": team, "opponent": opponent, "role": role, "match": m})
+                hits.append({"player": p["name"], "id": str(p.get("id", "")), "team": team, "team_short": e["team"],
+                             "opponent": opponent, "role": role, "match": m})
     return hits
 
 ROLE_TEXT = {"xi": "playing XI", "squad": "in squad", "bench": "on bench", "expected": "expected, squad not out yet",
@@ -772,6 +885,35 @@ def day_sections(hits, now):
     return "\n\n".join(f"{day} ({(now + timedelta(days=0 if day == 'TODAY' else 1)):%a %d %b})\n" + "\n".join(blocks)
                        for day, blocks in days.items())
 
+def track_match(db, h):
+    """Remember that we told the user this CSK player is in this match, so its scorecard is followed."""
+    m = h["match"]
+    row = db.execute("select players from tracked_matches where match_id=?", (m["id"],)).fetchone()
+    players = json.loads(row[0]) if row else {}
+    players[h["id"]] = {"name": h["player"], "team": h["team"]}
+    db.execute("insert into tracked_matches(match_id, title, players, start, last_poll, last_text, final, added)"
+               " values(?,?,?,?,null,'',0,?) on conflict(match_id) do update set players=excluded.players",
+               (m["id"], f"{m['title']} · {m['format']}" if m.get("format") else m["title"], json.dumps(players),
+                m["start"].timestamp() if m["start"] else None, time.time()))
+
+def correct_expected(cfg, db, raw, dry_run):
+    """A player we announced as "expected" (from the previous match's squad) gets a correction if his team's squad
+    is published without him (e.g. Nathan Ellis, injured before the 3rd ODI)."""
+    for k, v in db.execute("select k, v from kv where k like 'expected:%'").fetchall():
+        _, mid, pid = k.split(":", 2)
+        e = json.loads(v)
+        sq = raw.get(mid)
+        if not sq or e["team_short"] not in {x["team"] for x in sq.values()}:     # his team's squad isn't out yet
+            if time.time() > e["start"] + 2 * 86400:
+                db.execute("delete from kv where k=?", (k,))
+            continue
+        db.execute("delete from kv where k=?", (k,))
+        if pid not in sq:
+            send_alert(cfg, f"✏️ CORRECTION: {e['name']}\nEarlier alert said: expected for {e['title']} ({e['team']}), "
+                            f"starts {e['when']}.\nThe squad is now published and doesn't include him.\n{e['url']}",
+                       dry_run)
+    db.commit()
+
 def check_matches(cfg, db, roster, dry_run):
     try:
         live = parse_live_scores(http_get(cfg["live_scores_url"]))
@@ -788,14 +930,14 @@ def check_matches(cfg, db, roster, dry_run):
     now = datetime.now(IST)
     matches = {m["id"]: m for m in scheduled if m["start"] and m["start"] > now}   # started ones: trust live scores
     matches.update({m["id"]: m for m in live})
-    squads = {}
+    squads, raw = {}, {}                    # raw: what Cricbuzz published, before the "expected" fallback
     for m in matches.values():
         if m["phase"] == "unknown":
             print(f"[warn] unknown Cricbuzz match state '{m['state']}' ({m['title']}); not treated as live", file=sys.stderr)
         soon = m["phase"] == "upcoming" and m["start"] and (m["start"].date() - now.date()).days in (0, 1)
         if soon or m["phase"] in ("live", "paused", "unknown"):
             try:
-                squads[m["id"]] = get_squads(cfg, db, m)
+                squads[m["id"]] = raw[m["id"]] = get_squads(cfg, db, m)
                 if not squads[m["id"]] and soon and m["series_id"]:
                     squads[m["id"]] = expected_squads(cfg, db, m)
             except Exception as e:
@@ -804,26 +946,37 @@ def check_matches(cfg, db, roster, dry_run):
     for h in hits:                          # before the XI is out, flag recent injury news (the XI itself is definitive)
         if h["role"] in ("squad", "expected"):
             h["injury"] = injury_news(db, h["player"])
+    correct_expected(cfg, db, raw, dry_run)          # an "expected" player missing from the published squad
     recheck_news_matches(cfg, db, now, dry_run)     # articles change; correct what we already announced
     hits += news_fixture_hits(cfg, db, now)         # practice games, trials: matches only the news mentions
     kv = lambda k: db.execute("select 1 from kv where k=?", (k,)).fetchone()
-    mark = lambda k: db.execute("insert or replace into kv values(?,?)", (k, "1"))
+    mark = lambda k: db.execute("insert or replace into kv values(?,?)", (k, str(time.time())))
     def announce(h):
         mark(f"announced:{h['match']['id']}")
         m = h["match"]
         if m["phase"] == "news":            # remember what we told, so a later change in the article is corrected
             db.execute("update news_matches set told=? where player=? and day=? and status='active'",
                        (f"{m['first'].isoformat()}|{m['days']}", h["player"], m["first"].isoformat()))
+            return
+        track_match(db, h)                  # follow its scorecard for performance updates
+        if h["role"] == "expected":         # so a squad published without him gets a correction
+            db.execute("insert or replace into kv values(?,?)", (f"expected:{m['id']}:{h['id']}", json.dumps(
+                {"name": h["player"], "team": h["team"], "team_short": h["team_short"], "title": m["title"],
+                 "when": ist(m["start"]), "url": m["url"], "start": m["start"].timestamp(), "ts": time.time()})))
 
     # 1. PLAYING NOW: once per match, when it is live and a CSK player is in the XI (or the squad, before the XI is out).
     live_hits = {}
     for h in hits:
+        if h["match"]["phase"] in ("live", "paused") and h["role"] not in ("bench", "news"):
+            track_match(db, h)              # every run, so matches announced before this existed are followed too
         if h["match"]["phase"] == "live" and h["role"] != "bench":
             live_hits.setdefault(h["match"]["id"], []).append(h)
+    db.commit()
     for mid, hs in live_hits.items():
         if kv(f"alert:live:{mid}"):
             continue
-        mark(f"alert:live:{mid}"); db.commit()
+        mark(f"alert:live:{mid}")
+        db.commit()
         m = hs[0]["match"]
         who = ", ".join(f"{h['player']} ({h['team']}, {ROLE_TEXT[h['role']]})" for h in hs)
         note = " (playing XI not published yet)" if any(h["role"] != "xi" for h in hs) else ""
@@ -856,8 +1009,131 @@ def check_matches(cfg, db, roster, dry_run):
         send_alert(cfg, "📅 NEW MATCH FOR CSK PLAYERS\n\n" + day_sections(new, now), dry_run)
     return hits
 
+# ---------- player performance ----------
+def parse_scorecard(page):
+    """Cricbuzz scorecard page -> (matchHeader, innings). Each innings has batTeamDetails.batsmenData (runs, balls,
+    fours, sixes, outDesc, wicketCode, bowlerId, fielderId1-3) and bowlTeamDetails.bowlersData (overs, maidens,
+    runs, wickets), keyed by Cricbuzz player id."""
+    data = next_data(page)
+    header = next((o for o in json_objects(data, "matchHeader") if isinstance(o, dict)), {})
+    innings = next((o for o in json_objects(data, "scoreCard")
+                    if isinstance(o, list) and o and isinstance(o[0], dict) and "batTeamDetails" in o[0]), [])
+    return header, innings
+
+def player_figures(innings, pid):
+    """One player's batting, bowling and fielding in a match. Catches: CAUGHT with him as fielder, or CAUGHTBOWLED
+    off his bowling; stumpings: STUMPED with him as keeper; run outs: RUNOUT with him among the fielders."""
+    pid, f = int(pid), {"bat": [], "bowl": [], "catches": 0, "stumpings": 0, "runouts": 0, "played": False}
+    for inn in innings:
+        for b in ((inn.get("batTeamDetails") or {}).get("batsmenData") or {}).values():
+            if b.get("batId") == pid:
+                f["played"] = True                              # in the XI (players yet to bat are listed too)
+                if b.get("balls") or b.get("outDesc"):
+                    f["bat"].append(b)
+            code = b.get("wicketCode", "")
+            if (code == "CAUGHT" and b.get("fielderId1") == pid) or (code == "CAUGHTBOWLED" and b.get("bowlerId") == pid):
+                f["catches"] += 1
+            elif code == "STUMPED" and b.get("fielderId1") == pid:
+                f["stumpings"] += 1
+            elif code == "RUNOUT" and pid in (b.get("fielderId1"), b.get("fielderId2"), b.get("fielderId3")):
+                f["runouts"] += 1
+        for w in ((inn.get("bowlTeamDetails") or {}).get("bowlersData") or {}).values():
+            if w.get("bowlerId") == pid:
+                f["played"] = True
+                f["bowl"].append(w)
+    f["active"] = bool(f["bat"] or f["bowl"] or f["catches"] or f["stumpings"] or f["runouts"])
+    f["played"] = f["played"] or f["active"]
+    return f
+
+def count(n, one, many=None):
+    return f"{n:g} {one if n == 1 else many or one + 's'}"
+
+def not_out(b):
+    return b.get("outDesc", "") in ("", "not out", "batting")
+
+def figures_text(f, final):
+    """Batting (runs, balls, fours, sixes), bowling (overs, maidens, runs, wickets), fielding (catches, stumpings)."""
+    inns = lambda i, n: f"{('1st', '2nd', '3rd', '4th')[i]} inns: " if n > 1 else ""
+    bat = "; ".join(f"{inns(i, len(f['bat']))}{b['runs']} runs ({count(b['balls'], 'ball')}, {count(b['fours'], 'four')}, "
+                    f"{count(b['sixes'], 'six', 'sixes')}), {'not out' if not_out(b) else b['outDesc']}"
+                    for i, b in enumerate(f["bat"]))
+    bowl = "; ".join(f"{inns(i, len(f['bowl']))}{count(w['overs'], 'over')}, {count(w['maidens'], 'maiden')}, "
+                     f"{count(w['runs'], 'run')}, {count(w['wickets'], 'wicket')}" for i, w in enumerate(f["bowl"]))
+    field = f"{count(f['catches'], 'catch', 'catches')}, {count(f['stumpings'], 'stumping')}"
+    if f["runouts"]:
+        field += f", {count(f['runouts'], 'run out')}"
+    return [f"Batting: {bat or ('did not bat' if final else 'yet to bat')}",
+            f"Bowling: {bowl or ('did not bowl' if final else 'none yet')}", f"Fielding: {field}"]
+
+def figures_short(f):
+    """Compact line for the dashboard: 13* (19b, 0x4, 0x6) · 4-0-29-1 · 1 st"""
+    bits = [f"{b['runs']}{'*' if not_out(b) else ''} ({b['balls']}b, {b['fours']}x4, {b['sixes']}x6)" for b in f["bat"]]
+    bits += [f"{w['overs']:g}-{w['maidens']}-{w['runs']}-{w['wickets']}" for w in f["bowl"]]
+    field = ", ".join(x for x in (f"{f['catches']} ct" if f["catches"] else "", f"{f['stumpings']} st" if f["stumpings"] else "",
+                                  f"{f['runouts']} ro" if f["runouts"] else "") if x)
+    return " · ".join(bits + ([field] if field else [])) or "in the XI, no batting or bowling yet"
+
+def poll_performances(cfg, db, dry_run):
+    """Scorecard figures for the CSK players we said are playing: an update every hour while the match is on
+    (only when a figure changed), and a final summary once it's over."""
+    every, now = cfg["intervals_seconds"].get("performance", 3600), time.time()
+    for mid, title, players, start, last_poll, last_text in db.execute(
+            "select match_id, title, players, start, last_poll, last_text from tracked_matches where final=0").fetchall():
+        if (start and now < start) or (last_poll and now - last_poll < every - 60):
+            continue
+        if start and now > start + 6 * 86400:                  # never saw it finish: stop following it
+            db.execute("update tracked_matches set final=1 where match_id=?", (mid,))
+            continue
+        url = cfg["scorecard_url"].format(id=mid)
+        try:
+            header, innings = parse_scorecard(http_get(url))
+        except Exception as e:
+            print(f"[warn] scorecard {mid} failed: {e}", file=sys.stderr)
+            continue
+        db.execute("update tracked_matches set last_poll=? where match_id=?", (now, mid))
+        phase = match_phase(header.get("state"))
+        if phase not in ("live", "paused", "finished"):
+            db.commit()
+            continue
+        final, blocks, active = phase == "finished", [], False
+        for pid, p in json.loads(players).items():
+            f = player_figures(innings, pid)
+            if not f["played"]:
+                if final and innings:
+                    blocks.append(f"• {p['name']} ({p['team']}): did not play")
+                continue
+            active = active or f["active"]
+            blocks.append(f"• {p['name']} ({p['team']})\n   " + "\n   ".join(figures_text(f, final)))
+            db.execute("insert or replace into performances values(?,?,?,?,?)",
+                       (mid, p["name"], figures_short(f), int(final), now))
+        text = "\n".join(blocks) if innings else "No play in this match."
+        status = header.get("status", "")
+        if final:
+            send_alert(cfg, f"📊 FINAL: {title}\n{status}\n\n{text}\n{url}", dry_run)
+            db.execute("update tracked_matches set final=1, last_text=? where match_id=?", (text, mid))
+        elif active and text != last_text:
+            send_alert(cfg, f"📊 LIVE UPDATE: {title}\n{status}\n\n{text}\n{url}", dry_run)
+            db.execute("update tracked_matches set last_text=? where match_id=?", (text, mid))
+        db.commit()
+
+def prune_state(db):
+    """Keep state.db small: forget what's no longer needed. Runs once a day."""
+    now, day = time.time(), 86400
+    db.execute("delete from seen where ts < ?", (now - 14 * day,))
+    db.execute("delete from kv where (k like 'alert:%' or k like 'announced:%' or k like 'digest:%')"
+               " and cast(v as real) > 1e9 and cast(v as real) < ?", (now - 14 * day,))   # old '1' values are kept
+    db.execute("delete from story_events where ts < ?", (now - 2 * day,))
+    db.execute("delete from news_feed where seen < ?", (now - 3 * day,))
+    db.execute("delete from news_matches where status != 'active' or day < ?",
+               ((datetime.now(IST) - timedelta(days=14)).date().isoformat(),))
+    db.execute("delete from tracked_matches where added < ?", (now - 10 * day,))
+    db.execute("delete from performances where ts < ?", (now - 3 * day,))
+    db.execute("delete from series_cache where ts < ?", (now - day,))
+    db.execute("delete from outbox where created < ?", (now - day,))
+    db.commit()
+
 # ---------- dashboard ----------
-def write_dashboard(roster, hits, latest, db, path=None):
+def write_dashboard(roster, hits, db, path=None, min_importance="minor"):
     names = [p["name"] for p in roster]
     order = {"live": 0, "soon": 1, "off": 2}
     best = {}                               # player -> most relevant (class, text, hit)
@@ -865,6 +1141,10 @@ def write_dashboard(roster, hits, latest, db, path=None):
         cls, text = describe(h)
         if h["player"] not in best or order[cls] < order[best[h["player"]][0]]:
             best[h["player"]] = (cls, text, h)
+    perf = {}                               # player -> (latest scorecard line, final?) from the last 24 hours
+    for player, line, final in db.execute("select player, line, final from performances where ts >= ? order by ts",
+                                          (time.time() - 86400,)):
+        perf[player] = (line, final)
     rows = ""
     for n in sorted(names, key=lambda x: (order[best[x][0]] if x in best else 3, x)):
         cls, badge = "", ""
@@ -876,10 +1156,16 @@ def write_dashboard(roster, hits, latest, db, path=None):
             badge = (f'<span class="b {cls}">{html.escape(text)}</span> '
                      f'<a href="{html.escape(m["url"])}">{html.escape(vs + fmt)}</a> '
                      f'<small>{html.escape(m["desc"])}, {html.escape(m["series"])}</small>')
+        if n in perf:
+            badge += f'<br><small>📊 {"Final" if perf[n][1] else "Live"}: {html.escape(perf[n][0])}</small>'
         rows += f'<tr class="{cls}"><td>{html.escape(n)}</td><td>{badge}</td></tr>'
     news = ""
     day_ago = datetime.now(IST) - ALERT_MAX_AGE     # stories drop off after 24 h, like the alerts
-    recent = [i for i in latest if not i["when"] or i["when"] >= day_ago]
+    recent = [{"title": title, "link": link, "summary": summary, "tags": json.loads(tags), "importance": imp,
+               "rumour": bool(rumour), "when": datetime.fromtimestamp(pub or seen, IST)}
+              for title, link, summary, pub, seen, tags, imp, rumour in db.execute(
+                  "select title, link, summary, pub, seen, tags, importance, rumour from news_feed")
+              if datetime.fromtimestamp(pub or seen, IST) >= day_ago and RANKS[imp] >= RANKS[min_importance]]
     newest_first = sorted(recent, key=lambda i: (RANKS[i["importance"]], i["when"] or datetime.min.replace(tzinfo=IST)), reverse=True)
     for it in newest_first[:60]:
         w = it["when"].strftime("%d %b %H:%M") if it["when"] else ""
@@ -903,7 +1189,11 @@ li{{margin:.4rem 0}}li.breaking b{{color:#c00}}li.important b{{color:#d97706}}sm
 
 # ---------- main loop ----------
 def run_cycle(cfg, db, state, dry_run, first_run):
+    global outbox_db
     now = time.time(); iv = cfg["intervals_seconds"]; sent_before = alerts_sent
+    outbox_db = db                          # a Telegram message that fails waits in state.db for the next run
+    if not dry_run:
+        flush_outbox(cfg, db)
     # Last-run times live in state.db, so separate --once runs (GitHub Actions) also slow down roster and player news.
     last = {k: float(v) for k, v in db.execute("select k, v from kv where k like 'last:%'")}
     due = lambda job, every: now - last.get(f"last:{job}", 0) >= every - 60   # 60 s slack for cron jitter
@@ -911,19 +1201,20 @@ def run_cycle(cfg, db, state, dry_run, first_run):
         db.execute("insert or replace into kv values(?,?)", (f"last:{job}", str(now))); db.commit()
     if due("roster", iv["roster"]):
         state["roster"] = refresh_roster(cfg, db, dry_run, first_run); done("roster")
+        prune_state(db)                     # daily, with the roster
     elif "roster" not in state:
         state["roster"] = [{"id": i, "name": n} for i, n in db.execute("select id, name from squad")] or cfg["roster"]
     roster = state["roster"]
     names = [p["name"] for p in roster]
     set_other_names(cfg, db, names)
-    latest = state.setdefault("latest", [])
     if due("news", iv["news"]):
         pn = due("player_news", iv["player_news"])
-        process_items(cfg, db, fetch_news(cfg, names, pn), names, dry_run, latest, first_run)
+        process_items(cfg, db, fetch_news(cfg, names, pn), names, dry_run, [], first_run)
         done("news")
         if pn: done("player_news")
     hits = check_matches(cfg, db, roster, dry_run)
-    write_dashboard(roster, hits, latest, db)
+    poll_performances(cfg, db, dry_run)     # scorecards of matches we told the user about
+    write_dashboard(roster, hits, db, min_importance=cfg["alert"]["min_importance"])
     quiet_check_in(cfg, db, now, sent_before, dry_run)
     return hits
 

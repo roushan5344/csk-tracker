@@ -21,7 +21,8 @@ player news about every 20 min and the roster once a day (last-run times are kep
 ## 4. Customise (`config.json`)
 - `muted_players`: names to ignore   - `alert.min_importance`: minor / important / breaking
 - `alert.quiet_update_hours`: after this many hours with no alerts, send one silent "No new updates" message (default 3)
-- `intervals_seconds`: polling speed  - `team_queries`, `extra_rss_feeds`: news sources
+- `intervals_seconds`: polling speed (`performance`: how often live scorecards are read, default 3600 = hourly)
+- `team_queries`, `extra_rss_feeds`: news sources
 - `news_search_urls`: news search engines run for every query (Google News and Bing News; `{q}` is the query)
 - `official_feeds`: feeds whose every post is about CSK (CSK's YouTube channel), tagged "CSK (official)".
   X/Twitter and Instagram have no free feed; their posts arrive once news sites report them.
@@ -46,12 +47,29 @@ yet, it uses the previous match of the same series and marks the player "expecte
   itself is read (not possible for Google News links). "Two-day" etc. matches are listed on each day. Articles get
   updated, so each one is re-read every 3 hours until its match is over: if the day changed or the match is gone
   and it was already announced, a "✏️ CORRECTION" alert is sent.
-All times are IST. Run `python test_offline.py` after changes; it uses real Cricbuzz/Google News samples.
+- **Corrections**: a player announced as "expected" (from the previous match's squad) who is missing when his team's
+  squad is published gets a "✏️ CORRECTION" alert.
+- **Player performance** (📊): for every match we told you a CSK player is in, the Cricbuzz scorecard is read every hour
+  while it's on (`intervals_seconds.performance`) and a LIVE UPDATE is sent when his figures change; when it ends, a
+  FINAL summary: batting (runs, balls, fours, sixes, how out), bowling (overs, maidens, runs, wickets) and fielding
+  (catches, stumpings, run outs). The dashboard shows the latest figures under the player's name.
+All times are IST.
+
+## Telegram delivery
+Messages go out at most one per second (Telegram's limit). If Telegram says "too many requests" the tracker waits
+and retries; if it can't deliver (network down, Telegram error), the message waits in `state.db` and is retried on
+the next run for up to a day. Messages over Telegram's 4,096-character limit are split into parts.
+
+## Tests
+`python test_offline.py` runs the regression suite (104 tests, offline, fixed clock, real Cricbuzz / Google News /
+Bing samples): news, roster, matches, performance, Telegram messages, dashboard, config and workflows. GitHub runs
+it on every push (`.github/workflows/tests.yml`); a red ✗ on the commit means something broke.
 
 ## Known limits
-- Live in-play state names ("In Progress", "Innings Break", "Tea"...) follow Cricbuzz's usual wording but had not been
-  seen live when this was written (no match was live). An unrecognised state is printed as a `[warn]` and never shown
-  as PLAYING NOW; add it to `MATCH_STATES` in tracker.py.
+- Live match states confirmed on 29 Sep 2026 ("In Progress"). An unrecognised state is printed as a `[warn]` and never
+  shown as PLAYING NOW; add it to `MATCH_STATES` in tracker.py.
+- Clickbait-style headlines ("WATCH: ...", "jaw-dropping catch") are kept, because they are often a player's standout
+  moment; other publishers' copies of the same moment are dropped by the grouping below.
 - News relevance is keyword-based: passing mentions ("X breaks Dhoni's record") are dropped, but some fluff gets through.
 - Missing a story is treated as worse than a wrong tag: a player is also matched by surname or first name alone
   ("Ellis, Davies ruled out", "Ruturaj's gain"). A headline that spells out another cricketer's full name

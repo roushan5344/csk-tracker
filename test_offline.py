@@ -11,6 +11,8 @@ from unittest import mock
 
 import tracker as t
 
+REAL_HTTP_GET = t.http_get                                   # Base swaps in a fake web; TestHttp tests the real one
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 T0 = datetime(2026, 9, 29, 8, 5, tzinfo=t.IST)        # "now" in every test unless the test moves the clock
 EMPTY_RSS = "<rss><channel></channel></rss>"
@@ -30,9 +32,12 @@ class FakeTime:
     def time():
         return CLOCK[0].timestamp()
 
+    slept = []
+
     @staticmethod
-    def sleep(seconds):
-        raise AssertionError("tests never sleep")
+    def sleep(seconds):                                   # no real waiting: the clock just moves on
+        FakeTime.slept.append(seconds)
+        CLOCK[0] += timedelta(seconds=seconds)
 
 
 def at(*a):
@@ -84,6 +89,41 @@ def sched_page(*entries):
              "team1": dict(zip(("teamName", "teamSName"), t1.split("/"))),
              "team2": dict(zip(("teamName", "teamSName"), t2.split("/")))}]}
         for mid, sid, series, cat, desc, fmt, start, t1, t2 in entries]}}]})
+
+
+def bat(pid, name, runs, balls, fours, sixes, out="", code="", bowler=0, f1=0, f2=0):
+    return {"batId": pid, "batName": name, "runs": runs, "balls": balls, "fours": fours, "sixes": sixes, "outDesc": out,
+            "wicketCode": code, "bowlerId": bowler, "fielderId1": f1, "fielderId2": f2, "fielderId3": 0}
+
+
+def bowl(pid, name, overs, maidens, runs, wickets):
+    return {"bowlerId": pid, "bowlName": name, "overs": overs, "maidens": maidens, "runs": runs, "wickets": wickets}
+
+
+def innings(team, batters, bowlers):
+    return {"batTeamDetails": {"batTeamName": team, "batsmenData": {f"bat_{i}": b for i, b in enumerate(batters, 1)}},
+            "bowlTeamDetails": {"bowlersData": {f"bowl_{i}": w for i, w in enumerate(bowlers, 1)}}}
+
+
+def scorecard(state, status, *inns):
+    """A Cricbuzz scorecard page (live-cricket-scorecard/{id}): scorecardApiData with matchHeader and innings."""
+    return next_page({"scorecardApiData": {"scoreCard": list(inns), "matchHeader": {"state": state, "status": status}}})
+
+
+# Real figures (Cricbuzz, 27-29 Sep 2026). Opponent ids that weren't needed are made up (9xxxx).
+CARD_151532 = scorecard("Complete", "India won by 8 wkts",                       # WI vs IND, 1st ODI
+                        innings("West Indies", [bat(8431, "John Campbell", 62, 60, 6, 3, "c Prasidh Krishna b Kuldeep Yadav",
+                                                    "CAUGHT", 8292, 10551)], [bowl(8292, "Kuldeep Yadav", 10, 1, 40, 4)]),
+                        innings("India", [bat(11813, "Ruturaj Gaikwad", 13, 19, 0, 0, "not out")], []))
+CARD_IPL37 = scorecard("Complete", "Gujarat Titans won by 8 wkts",               # IPL 2026, 37th match, CSK vs GT
+                       innings("Chennai Super Kings", [bat(8271, "Sanju Samson", 11, 15, 2, 0, "c Jos Buttler b Kagiso Rabada",
+                                                           "CAUGHT", 90001, 90002)], []),
+                       innings("Gujarat Titans", [bat(11808, "Shubman Gill", 40, 30, 4, 1, "st Sanju Samson b Noor Ahmad",
+                                                      "STUMPED", 15452, 8271)], [bowl(15452, "Noor Ahmad", 4, 0, 29, 1)]))
+LIVE_155422 = lambda overs, maidens, runs, wkts: scorecard(                      # India A vs Australia A, live
+    "In Progress", "Day 1: 2nd Session - Australia A opt to bat",
+    innings("Australia A", [bat(90003, "Sam Konstas", 20, 60, 2, 0, "batting")],
+            [bowl(14598, "Anshul Kamboj", overs, maidens, runs, wkts)]))
 
 
 # Real matchInfo values from the live-scores page, 29 Sep 2026 01:44 IST (+ an in-play and an unknown-state match).
@@ -161,6 +201,7 @@ class Base(unittest.TestCase):
 
     def setUp(self):
         CLOCK[0] = T0
+        FakeTime.slept = []
         self.tmp = tempfile.mkdtemp()
         self.cfg = t.load_config()
         self.roster = self.cfg["roster"]
@@ -169,7 +210,8 @@ class Base(unittest.TestCase):
         self.out, self.err = io.StringIO(), io.StringIO()
         patches = [mock.patch.object(t, "datetime", FakeDatetime), mock.patch.object(t, "time", FakeTime),
                    mock.patch.object(t, "http_get", self.fake_get), mock.patch.object(t, "HERE", self.tmp),
-                   mock.patch.object(t, "alerts_sent", 0), mock.patch("sys.stdout", self.out),
+                   mock.patch.object(t, "alerts_sent", 0), mock.patch.object(t, "last_send", 0.0),
+                   mock.patch.object(t, "outbox_db", None), mock.patch("sys.stdout", self.out),
                    mock.patch("sys.stderr", self.err)]
         if self.patch_send:
             patches.append(mock.patch.object(t, "send_alert", self.fake_send))
@@ -180,8 +222,9 @@ class Base(unittest.TestCase):
         self.addCleanup(self.db.close)
         t.set_other_names(self.cfg, self.db, self.names)
 
-    def fake_get(self, url, timeout=20):
+    def fake_get(self, url, timeout=20, **kw):
         self.fetched.append(url)
+        self.last_kw = kw
         for key, page in self.pages.items():
             if key == url or key in url:
                 return page() if callable(page) else page
@@ -231,6 +274,8 @@ class TestConfig(Base):
         self.assertIn("{id}", self.cfg["squads_url"])
         self.assertIn("{sid}", self.cfg["series_matches_url"])
         self.assertIn("{year}", self.cfg["ipl_archive_url"])
+        self.assertIn("{id}", self.cfg["scorecard_url"])
+        self.assertEqual(self.cfg["intervals_seconds"]["performance"], 3600)          # live figures every hour
 
     def test_alert_settings(self):
         a = self.cfg["alert"]
@@ -267,6 +312,14 @@ class TestRepoHygiene(unittest.TestCase):
         self.assertIn("TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}", y)
         self.assertRegex(y, r"path: state\.db\s*\n\s*key: state-\$\{\{ github\.run_id \}\}\s*\n\s*restore-keys: state-")
         self.assertIsNone(re.search(r"\{[^}\n]*\$\{\{", y), "a {...} mapping holding ${{ }} breaks the YAML (29 Sep bug)")
+        for action in ("actions/checkout@v7", "actions/setup-python@v7", "actions/cache@v6"):    # Node 24 versions
+            self.assertIn(action, y)
+
+    def test_test_workflow_runs_the_suite_on_every_push(self):
+        y = self.read(".github", "workflows", "tests.yml")
+        self.assertRegex(y, r"on:\s*\n\s*push:")
+        self.assertIn("python test_offline.py", y)
+        self.assertNotIn("TELEGRAM", y)                                        # tests never get the real bot
 
 
 # =====================================================================================================
@@ -355,8 +408,11 @@ class TestRanking(Base):
         self.assertEqual(t.classify("Sanju Samson reportedly set to be named CSK vice-captain"), ("important", True))
         self.assertEqual(t.classify("Dhoni could retire after IPL 2027"), ("important", True))
 
-    def test_clickbait_is_dropped(self):
-        self.assertIsNone(t.classify("SHOCKING: Dhoni viral video breaks the internet"))
+    def test_clickbait_style_is_kept_and_standout_performances_rank_important(self):
+        self.assertEqual(t.classify("SHOCKING: Dhoni viral video breaks the internet"), ("minor", False))
+        self.assertEqual(t.classify("WATCH: Matt Short’s Jaw-Dropping One-Handed Catch To Dismiss Labuschagne")[0],
+                         "important")
+        self.assertEqual(t.classify("Noor Ahmad takes hat-trick in SA20 opener")[0], "important")
 
 
 class TestTagging(Base):
@@ -447,10 +503,15 @@ class TestNewsPipeline(Base):
         self.assertEqual([i["title"] for i in latest], ["Nathan Ellis suffered a side issue"])
         self.assertEqual(len(self.sent), 1)
 
-    def test_irrelevant_clickbait_and_pages_are_dropped(self):
-        latest = self.process(rss(["Unrelated news about football", "SHOCKING: Dhoni viral video breaks the internet",
-                                   "chennai super kings - Cricbuzz"]))
+    def test_irrelevant_stories_and_pages_are_dropped(self):
+        latest = self.process(rss(["Unrelated news about football", "chennai super kings - Cricbuzz"]))
         self.assertEqual((latest, self.sent), ([], []))
+
+    def test_highlight_clips_first_report_only(self):
+        latest = self.process(rss(["WATCH: Matt Short’s Jaw-Dropping One-Handed Catch To Dismiss Marnus Labuschagne",
+                                   "Matt Short takes stunning one-hand return catch to dismiss Marnus Labuschagne"]))
+        self.assertEqual([i["title"][:16] for i in latest], ["WATCH: Matt Shor"])   # the copy is grouped away
+        self.assertEqual(len(self.sent), 1)
 
     def test_official_youtube_posts(self):
         items = [{**i, "official": "CSK (official)"} for i in t.parse_rss(
@@ -553,6 +614,54 @@ class TestTelegram(Base):
         with mock.patch.object(t.urllib.request, "urlopen", side_effect=OSError("HTTP Error 401: Unauthorized")):
             t.send_alert(self.cfg, "x")
         self.assertIn("Telegram send failed: HTTP Error 401", self.err.getvalue())
+
+    def http_error(self, code, body=b""):
+        return t.urllib.error.HTTPError("https://api.telegram.org", code, "err", {}, io.BytesIO(body))
+
+    def test_messages_are_paced_one_per_second(self):
+        t.send_alert(self.cfg, "one")
+        t.send_alert(self.cfg, "two")
+        self.assertEqual(len(self.calls), 2)
+        self.assertAlmostEqual(sum(FakeTime.slept), 1.1, places=3)
+
+    def test_rate_limit_waits_and_retries(self):
+        replies = [self.http_error(429, b'{"ok":false,"parameters":{"retry_after":7}}'), None]
+        def urlopen(url, data=None, timeout=None):
+            r = replies.pop(0)
+            if r:
+                raise r
+            self.calls.append((url, urllib.parse.parse_qs(data.decode())))
+        with mock.patch.object(t.urllib.request, "urlopen", urlopen):
+            t.send_alert(self.cfg, "busy")
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(7, FakeTime.slept)
+
+    def test_failed_message_waits_in_the_outbox_and_is_delivered_next_run(self):
+        t.outbox_db = self.db
+        with mock.patch.object(t.urllib.request, "urlopen", side_effect=OSError("network down")):
+            t.send_alert(self.cfg, "📅 PLAYING TODAY: X")
+        self.assertEqual(self.db.execute("select text from outbox").fetchall(), [("📅 PLAYING TODAY: X\n🕒 29 Sep 08:05 IST",)])
+        t.flush_outbox(self.cfg, self.db)                                    # next run, Telegram reachable again
+        self.assertEqual(self.calls[0][1]["text"], ["📅 PLAYING TODAY: X\n🕒 29 Sep 08:05 IST"])
+        self.assertEqual(self.db.execute("select count(*) from outbox").fetchone(), (0,))
+
+    def test_bad_request_is_not_retried(self):
+        t.outbox_db = self.db
+        tries = []
+        def urlopen(url, data=None, timeout=None):
+            tries.append(1)
+            raise self.http_error(400)
+        with mock.patch.object(t.urllib.request, "urlopen", urlopen):
+            t.send_alert(self.cfg, "x")
+        self.assertEqual(len(tries), 1)
+
+    def test_long_messages_are_split(self):
+        text = "\n".join(f"• line {i} " + "x" * 90 for i in range(100))       # about 10,000 characters
+        t.send_alert(self.cfg, text)
+        parts = [c[1]["text"][0] for c in self.calls]
+        self.assertGreaterEqual(len(parts), 3)
+        self.assertTrue(all(len(p) <= 4096 for p in parts))
+        self.assertEqual("\n".join(parts), text + "\n🕒 29 Sep 08:05 IST")      # nothing lost, stamp at the end
 
     def test_news_alert_end_to_end(self):
         latest = []
@@ -738,6 +847,27 @@ class TestMatchAlerts(Base):
         self.assertEqual(t.check_matches(self.cfg, self.db, self.roster, True), [])
         self.assertIn("no match data on Cricbuzz", self.err.getvalue())
 
+    def test_expected_player_missing_from_the_published_squad_gets_a_correction(self):
+        self.run_at(2026, 9, 29, 8, 5)                                       # digest: Ellis and Ruturaj "expected"
+        self.pages["cricket-match-squads/147909"] = next_page(               # real: Ellis ruled out of the 3rd ODI
+            squads("AUS", "Squad", [(90010, "Mitchell Marsh")]), squads("RSA", "Squad", [(90011, "Temba Bavuma")]))
+        self.pages["cricket-match-squads/151543"] = next_page(squads("IND", "Squad", [(11813, "Ruturaj Gaikwad")]))
+        self.run_at(2026, 9, 29, 12, 0)
+        self.run_at(2026, 9, 29, 12, 40)
+        fixes = [x for x in self.texts() if x.startswith("✏️")]
+        self.assertEqual(fixes, ["✏️ CORRECTION: Nathan Ellis\nEarlier alert said: expected for South Africa vs Australia, "
+                                 "3rd ODI (Australia), starts 30 Sep 17:00 IST.\nThe squad is now published and doesn't "
+                                 "include him.\nhttps://www.cricbuzz.com/live-cricket-scores/147909"])   # once; not Ruturaj
+
+    def test_series_lists_are_cached(self):
+        m = {x["id"]: x for x in t.parse_schedule(sched_page(WI_ODI2))}["151543"]
+        t.expected_squads(self.cfg, self.db, m)
+        t.expected_squads(self.cfg, self.db, m)
+        self.assertEqual(sum("/cricket-series/11902/" in u for u in self.fetched), 1)
+        CLOCK[0] += timedelta(minutes=31)
+        t.expected_squads(self.cfg, self.db, m)
+        self.assertEqual(sum("/cricket-series/11902/" in u for u in self.fetched), 2)
+
     def test_badges(self):
         hits = self.run_at(2026, 9, 29, 8, 5)
         by = {h["player"]: t.describe(h, CLOCK[0])[1] for h in hits}
@@ -911,15 +1041,30 @@ class TestPollingAndCheckIns(Base):
 
 # =====================================================================================================
 class TestDashboard(Base):
-    def page(self, hits=(), latest=()):
+    def page(self, hits=(), latest=(), min_importance="minor"):
+        for it in latest:                                   # what process_items saves for the dashboard
+            self.db.execute("insert into news_feed values(?,?,?,?,?,?,?,?,?,?)",
+                            (it["title"], it["title"], it["link"], "", it["summary"], it["when"].timestamp(),
+                             it["when"].timestamp(), json.dumps(it["tags"]), it["importance"], int(it["rumour"])))
         path = os.path.join(self.tmp, "d.html")
-        t.write_dashboard(self.roster, list(hits), list(latest), self.db, path)
+        t.write_dashboard(self.roster, list(hits), self.db, path, min_importance)
         with open(path, encoding="utf-8") as f:
             return f.read()
 
     def item(self, title, imp="minor", hours=1, rumour=False, summary=""):
         return {"title": title, "link": "https://x.test/?a=1&b=2", "when": T0 - timedelta(hours=hours), "tags": ["CSK"],
                 "importance": imp, "rumour": rumour, "summary": summary, "source": ""}
+
+    def test_news_survives_a_restart(self):
+        self.process(rss(["Nathan Ellis suffered a side issue"]))
+        self.db.close()
+        self.db = t.db_connect(os.path.join(self.tmp, "state.db"))        # a new process, same state.db
+        self.assertIn("Nathan Ellis suffered a side issue", self.page())
+
+    def test_min_importance_applies_to_the_news_list(self):
+        html = self.page(latest=[self.item("Minor story"), self.item("Big story", "breaking")], min_importance="important")
+        self.assertIn("Big story", html)
+        self.assertNotIn("Minor story", html)
 
     def test_squad_badges_and_order(self):
         self.cricbuzz()
@@ -966,6 +1111,164 @@ class TestDashboard(Base):
 
     def test_empty_news(self):
         self.assertIn("<li>Nothing new yet.</li>", self.page())
+
+
+# =====================================================================================================
+class TestHttp(Base):
+    """The real page fetcher: one retry after a dropped connection or server error, none after 403/404."""
+    def fetch(self, replies):
+        calls = []
+        def urlopen(req, timeout=None):
+            calls.append(req.get_header("User-agent"))
+            r = replies.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return io.BytesIO(r.encode())
+        with mock.patch.object(t.urllib.request, "urlopen", urlopen):
+            try:
+                return REAL_HTTP_GET("https://example.test/"), calls
+            except Exception as e:
+                return e, calls
+
+    def http_err(self, code):
+        return t.urllib.error.HTTPError("https://example.test/", code, "x", {}, io.BytesIO(b""))
+
+    def test_retries_after_server_error_or_dropped_connection(self):
+        self.assertEqual(self.fetch([self.http_err(503), "page"])[0], "page")
+        self.assertEqual(self.fetch([ConnectionResetError("IncompleteRead"), "page"])[0], "page")
+
+    def test_no_retry_after_not_found(self):
+        result, calls = self.fetch([self.http_err(404), "page"])
+        self.assertIsInstance(result, t.urllib.error.HTTPError)
+        self.assertEqual(len(calls), 1)
+
+    def test_blocked_article_is_retried_with_the_other_identity(self):
+        def page():
+            if self.last_kw.get("ua") != t.BROWSER_UA:
+                raise t.urllib.error.HTTPError(TOI_URL, 403, "Forbidden", {}, io.BytesIO(b""))
+            return TOI_PAGE
+        self.pages[TOI_URL] = page
+        self.assertIn("Brabourne Stadium", t.article_text(TOI_URL))
+        self.assertEqual(self.fetched, [TOI_URL, TOI_URL])
+
+
+class TestStateCleanup(Base):
+    def test_old_entries_are_pruned_and_recent_ones_kept(self):
+        old, now = T0.timestamp() - 15 * 86400, T0.timestamp()
+        db = self.db
+        db.executemany("insert into seen(key, title, ts) values(?,?,?)", [("a", "old story", old), ("b", "new story", now)])
+        db.executemany("insert into kv values(?,?)", [("alert:live:1", str(old)), ("alert:live:2", str(now)),
+                                                      ("announced:3", "1"), ("last:news", str(old))])
+        db.execute("insert into story_events values('Nathan Ellis','injury',1,?)", (old,))
+        db.execute("insert into outbox(text, silent, created) values('x', 0, ?)", (old,))
+        t.prune_state(db)
+        self.assertEqual(db.execute("select title from seen").fetchall(), [("new story",)])
+        self.assertEqual(sorted(k for (k,) in db.execute("select k from kv")),
+                         ["alert:live:2", "announced:3", "last:news"])       # old-style "1" and timers are kept
+        self.assertEqual(db.execute("select count(*) from story_events").fetchone(), (0,))
+        self.assertEqual(db.execute("select count(*) from outbox").fetchone(), (0,))
+
+
+# =====================================================================================================
+class TestPerformance(Base):
+    """Scorecards for the players we said are playing: hourly while live, a final summary when it ends."""
+    def setUp(self):
+        super().setUp()
+        self.cricbuzz()
+        self.card = LIVE_155422(7, 4, 7, 0)                                 # real, 29 Sep ~12:50 IST
+        self.pages["live-cricket-scorecard/155422"] = lambda: self.card
+
+    def test_figures_from_real_scorecards(self):
+        _, inns = t.parse_scorecard(CARD_151532)
+        self.assertEqual(t.figures_text(t.player_figures(inns, "11813"), True),
+                         ["Batting: 13 runs (19 balls, 0 fours, 0 sixes), not out", "Bowling: did not bowl",
+                          "Fielding: 0 catches, 0 stumpings"])
+        _, inns = t.parse_scorecard(CARD_IPL37)
+        samson, noor = t.player_figures(inns, "8271"), t.player_figures(inns, "15452")
+        self.assertEqual(t.figures_text(samson, True),
+                         ["Batting: 11 runs (15 balls, 2 fours, 0 sixes), c Jos Buttler b Kagiso Rabada",
+                          "Bowling: did not bowl", "Fielding: 0 catches, 1 stumping"])
+        self.assertEqual(t.figures_text(noor, True)[1], "Bowling: 4 overs, 0 maidens, 29 runs, 1 wicket")
+        self.assertEqual((t.figures_short(samson), t.figures_short(noor)), ("11 (15b, 2x4, 0x6) · 1 st", "4-0-29-1"))
+        self.assertFalse(t.player_figures(inns, "265")["played"])           # Dhoni wasn't in that match
+
+    def test_catches_caught_and_bowled_run_outs_and_multiple_innings(self):   # made-up Test match
+        inns = [innings("India", [bat(1, "A", 45, 60, 5, 1, "c Z b Y", "CAUGHT", 2, 3), bat(9, "Me", 30, 40, 3, 0,
+                                  "b Q", "BOWLED", 4)], [bowl(9, "Me", 12.3, 2, 40, 3)]),
+                innings("England", [bat(5, "B", 10, 12, 1, 0, "c and b Me", "CAUGHTBOWLED", 9),
+                                    bat(6, "C", 0, 1, 0, 0, "run out (Me/X)", "RUNOUT", 0, 9, 7),
+                                    bat(7, "D", 2, 5, 0, 0, "c Me b R", "CAUGHT", 8, 9)], []),
+                innings("India", [bat(9, "Me", 12, 20, 1, 1, "not out")], [bowl(9, "Me", 5, 1, 11, 0)])]
+        f = t.player_figures(inns, 9)
+        self.assertEqual(t.figures_text(f, True),
+                         ["Batting: 1st inns: 30 runs (40 balls, 3 fours, 0 sixes), b Q; 2nd inns: 12 runs (20 balls, "
+                          "1 four, 1 six), not out",
+                          "Bowling: 1st inns: 12.3 overs, 2 maidens, 40 runs, 3 wickets; 2nd inns: 5 overs, 1 maiden, "
+                          "11 runs, 0 wickets",
+                          "Fielding: 2 catches, 0 stumpings, 1 run out"])
+
+    def poll_at(self, *when):
+        CLOCK[0] = at(*when)
+        t.poll_performances(self.cfg, self.db, True)
+
+    def test_live_updates_every_hour_then_a_final_summary(self):
+        t.check_matches(self.cfg, self.db, self.roster, True)              # 08:05 digest: Kamboj plays today, 09:30
+        self.assertEqual(json.loads(self.db.execute("select players from tracked_matches where match_id='155422'")
+                                    .fetchone()[0]), {"14598": {"name": "Anshul Kamboj", "team": "India A"}})
+        self.poll_at(2026, 9, 29, 9, 0)                                    # not started: no fetch
+        self.assertNotIn("live-cricket-scorecard/155422", " ".join(self.fetched))
+        self.poll_at(2026, 9, 29, 12, 50)
+        updates = [x for x in self.texts() if x.startswith("📊")]
+        self.assertEqual(updates, ["📊 LIVE UPDATE: India A vs Australia A, 2nd unofficial Test · TEST\nDay 1: 2nd Session "
+                                   "- Australia A opt to bat\n\n• Anshul Kamboj (India A)\n   Batting: yet to bat\n   "
+                                   "Bowling: 7 overs, 4 maidens, 7 runs, 0 wickets\n   Fielding: 0 catches, 0 stumpings\n"
+                                   "https://www.cricbuzz.com/live-cricket-scorecard/155422"])
+        self.poll_at(2026, 9, 29, 13, 20)                                  # within the hour: no fetch
+        self.poll_at(2026, 9, 29, 13, 51)                                  # an hour on, nothing changed: no message
+        self.assertEqual(sum("scorecard/155422" in u for u in self.fetched), 2)
+        self.assertEqual(sum(x.startswith("📊") for x in self.texts()), 1)
+        self.card = LIVE_155422(12, 5, 20, 1)                              # a wicket
+        self.poll_at(2026, 9, 29, 14, 55)
+        self.assertIn("Bowling: 12 overs, 5 maidens, 20 runs, 1 wicket", self.texts()[-1])
+        self.card = scorecard("Complete", "India A won by 7 wkts",
+                              innings("Australia A", [], [bowl(14598, "Anshul Kamboj", 22, 8, 51, 3)]),
+                              innings("India A", [bat(14598, "Anshul Kamboj", 34, 41, 4, 1, "not out")], []))
+        self.poll_at(2026, 10, 2, 16, 0)
+        self.assertEqual(self.texts()[-1], "📊 FINAL: India A vs Australia A, 2nd unofficial Test · TEST\nIndia A won by 7 "
+                                           "wkts\n\n• Anshul Kamboj (India A)\n   Batting: 34 runs (41 balls, 4 fours, 1 six), "
+                                           "not out\n   Bowling: 22 overs, 8 maidens, 51 runs, 3 wickets\n   Fielding: 0 "
+                                           "catches, 0 stumpings\nhttps://www.cricbuzz.com/live-cricket-scorecard/155422")
+        n = sum("scorecard/155422" in u for u in self.fetched)
+        self.poll_at(2026, 10, 2, 18, 0)                                   # finished: no more polling
+        self.assertEqual(sum("scorecard/155422" in u for u in self.fetched), n)
+
+    def test_player_left_out_and_abandoned_match(self):
+        t.check_matches(self.cfg, self.db, self.roster, True)              # Ruturaj "expected" for the 2nd ODI
+        self.pages["live-cricket-scorecard/151543"] = scorecard(
+            "Complete", "India won by 5 wkts", innings("India", [bat(576, "Rohit Sharma", 80, 70, 8, 2, "not out")], []))
+        self.pages["live-cricket-scorecard/147909"] = scorecard("Abandon", "Match abandoned due to rain (No toss)")
+        self.poll_at(2026, 9, 30, 23, 0)
+        finals = {x.splitlines()[1]: x for x in self.texts() if x.startswith("📊 FINAL")}
+        self.assertIn("• Ruturaj Gaikwad (India): did not play", finals["India won by 5 wkts"])
+        self.assertIn("No play in this match.", finals["Match abandoned due to rain (No toss)"])
+
+    def test_live_matches_announced_before_are_still_followed(self):
+        self.db.execute("insert into kv values('alert:live:900001', '1')")   # PLAYING NOW went out on an earlier run
+        t.check_matches(self.cfg, self.db, self.roster, True)
+        self.assertTrue(self.db.execute("select 1 from tracked_matches where match_id='900001'").fetchone())
+
+    def test_bench_players_are_not_followed(self):
+        t.check_matches(self.cfg, self.db, self.roster, True)              # PLAYING NOW for the live SA20 match
+        players = json.loads(self.db.execute("select players from tracked_matches where match_id='900001'").fetchone()[0])
+        self.assertEqual(list(players), ["20538"])                           # Brevis (XI), not Noor (bench)
+
+    def test_dashboard_shows_the_latest_figures(self):
+        t.check_matches(self.cfg, self.db, self.roster, True)
+        self.poll_at(2026, 9, 29, 12, 50)
+        path = os.path.join(self.tmp, "d.html")
+        t.write_dashboard(self.roster, [], self.db, path)
+        with open(path, encoding="utf-8") as f:
+            self.assertIn("<td>Anshul Kamboj</td><td><br><small>📊 Live: 7-4-7-0</small>", f.read())
 
 
 if __name__ == "__main__":

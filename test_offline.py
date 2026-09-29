@@ -1202,8 +1202,9 @@ class TestDashboard(Base):
         with open(path, encoding="utf-8") as f:
             return f.read()
 
-    def item(self, title, imp="minor", hours=1, rumour=False, summary=""):
-        return {"title": title, "link": "https://x.test/?a=1&b=2", "when": T0 - timedelta(hours=hours), "tags": ["CSK"],
+    def item(self, title, imp="minor", hours=1, rumour=False, summary="", tags=("CSK",)):
+        return {"title": title, "link": "https://x.test/?a=1&b=2", "when": T0 - timedelta(hours=hours),
+                "tags": list(tags),
                 "importance": imp, "rumour": rumour, "summary": summary, "source": ""}
 
     def test_news_survives_a_restart(self):
@@ -1213,9 +1214,10 @@ class TestDashboard(Base):
         self.assertIn("Nathan Ellis suffered a side issue", self.page())
 
     def test_min_importance_applies_to_the_news_list(self):
-        html = self.page(latest=[self.item("Minor story"), self.item("Big story", "breaking")], min_importance="important")
-        self.assertIn("Big story", html)
-        self.assertNotIn("Minor story", html)
+        html = self.page(latest=[self.item("CSK minor story"), self.item("CSK big story", "breaking")],
+                         min_importance="important")
+        self.assertIn("CSK big story", html)
+        self.assertNotIn("CSK minor story", html)
 
     def test_squad_badges_and_order(self):
         self.cricbuzz()
@@ -1242,18 +1244,19 @@ class TestDashboard(Base):
         self.assertIn('<span class="b soon">PLAYING TODAY, per news (not an official fixture)</span>', html)
 
     def test_news_list(self):
-        html = self.page(latest=[self.item("Minor story", "minor", 1), self.item("Old story", "breaking", 30),
-                                 self.item("Breaking story", "breaking", 5), self.item("Newer minor", "minor", 0.5),
-                                 self.item("Rumour story", "important", 2, rumour=True, summary="One line.")])
+        html = self.page(latest=[self.item("CSK minor story", "minor", 1), self.item("CSK old story", "breaking", 30),
+                                 self.item("CSK breaking story", "breaking", 5),
+                                 self.item("CSK newer minor", "minor", 0.5),
+                                 self.item("CSK rumour story", "important", 2, rumour=True, summary="One line.")])
         titles = re.findall(r'<a href="[^"]*">([^<]*)</a> <small>', html)
-        self.assertEqual(titles, ["Breaking story", "Rumour story", "Newer minor", "Minor story"])   # rank, then newest
-        self.assertNotIn("Old story", html)                                     # over 24 hours
+        self.assertEqual(titles, ["CSK breaking story", "CSK rumour story", "CSK newer minor", "CSK minor story"])
+        self.assertNotIn("CSK old story", html)                                 # over 24 hours
         self.assertIn("<b>IMPORTANT</b> <em>(rumour)</em>", html)
         self.assertIn("<br><small>One line.</small>", html)
         self.assertIn("<h2>News, last 24 hours</h2>", html)
 
     def test_html_is_escaped_and_page_refreshes(self):
-        html = self.page(latest=[self.item("<script>alert(1)</script> & more")])
+        html = self.page(latest=[self.item("CSK <script>alert(1)</script> & more")])
         self.assertNotIn("<script>alert", html)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt; &amp; more", html)
         self.assertIn('href="https://x.test/?a=1&amp;b=2"', html)
@@ -1262,6 +1265,23 @@ class TestDashboard(Base):
 
     def test_empty_news(self):
         self.assertIn("<li>Nothing new yet.</li>", self.page())
+
+    def test_stories_are_tagged_again_with_todays_rules(self):
+        kept = "Rishabh Pant, Sarfaraz Khan Ready For Irani Cup In Srinagar; Aquib Nabi Misses Due To National Duty"
+        html = self.page(latest=[   # real, sent on 29 Sep 2026 before the common-surname rule
+            self.item("'He Was A...': Azam Khan Reacts To His Own ‘Death’ News", tags=["Sarfaraz Khan", "Aman Khan"]),
+            self.item("Gulveer Singh completes a hat-trick, unaware of PT Usha's record he emulated",
+                      tags=["Gurjapneet Singh"]),
+            self.item(kept, tags=["Sarfaraz Khan", "Aman Khan"]),
+            self.item("Mood for today ✨ #WhistlePodu #Yellove", tags=["CSK (official)"])])   # the team's own post
+        self.assertNotIn("Azam Khan", html)
+        self.assertNotIn("Gulveer", html)
+        self.assertIn(f"{t.html.escape(kept)}</a> <small>Sarfaraz Khan · ", html)          # Aman Khan dropped
+        self.assertIn("Mood for today", html)
+        muted = os.path.join(self.tmp, "m.html")
+        t.write_dashboard(self.roster, [], self.db, muted, muted=["Sarfaraz Khan"])
+        with open(muted, encoding="utf-8") as f:
+            self.assertNotIn("Irani Cup", f.read())                            # a player muted later drops off too
 
 
 # =====================================================================================================

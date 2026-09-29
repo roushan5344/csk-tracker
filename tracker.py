@@ -1214,7 +1214,7 @@ def prune_state(db):
     db.commit()
 
 # ---------- dashboard ----------
-def write_dashboard(roster, hits, db, path=None, min_importance="minor"):
+def write_dashboard(roster, hits, db, path=None, min_importance="minor", muted=()):
     names = [p["name"] for p in roster]
     order = {"live": 0, "soon": 1, "off": 2}
     best = {}                               # player -> most relevant (class, text, hit)
@@ -1242,11 +1242,15 @@ def write_dashboard(roster, hits, db, path=None, min_importance="minor"):
         rows += f'<tr class="{cls}"><td>{html.escape(n)}</td><td>{badge}</td></tr>'
     news = ""
     day_ago = datetime.now(IST) - ALERT_MAX_AGE     # stories drop off after 24 h, like the alerts
-    recent = [{"title": title, "link": link, "summary": summary, "tags": json.loads(tags), "importance": imp,
-               "rumour": bool(rumour), "when": datetime.fromtimestamp(pub or seen, IST)}
-              for title, link, summary, pub, seen, tags, imp, rumour in db.execute(
-                  "select title, link, summary, pub, seen, tags, importance, rumour from news_feed")
-              if datetime.fromtimestamp(pub or seen, IST) >= day_ago and RANKS[imp] >= RANKS[min_importance]]
+    recent = []
+    for title, link, summary, pub, seen, tags, imp, rumour in db.execute(
+            "select title, link, summary, pub, seen, tags, importance, rumour from news_feed"):
+        when, tags = datetime.fromtimestamp(pub or seen, IST), json.loads(tags)
+        if not any("(official)" in x for x in tags):    # tagged again with today's rules, so a story a later fix
+            tags = tag_item(title, names, set(muted))   # no longer tags ("Azam Khan" as our Khan) drops off
+        if tags and when >= day_ago and RANKS[imp] >= RANKS[min_importance]:
+            recent.append({"title": title, "link": link, "summary": summary, "tags": tags, "importance": imp,
+                           "rumour": bool(rumour), "when": when})
     newest_first = sorted(recent, key=lambda i: (RANKS[i["importance"]], i["when"] or datetime.min.replace(tzinfo=IST)), reverse=True)
     for it in newest_first[:60]:
         w = it["when"].strftime("%d %b %H:%M") if it["when"] else ""
@@ -1355,7 +1359,7 @@ def run_cycle(cfg, db, state, dry_run, first_run):
         if pn: done("player_news")
     hits = check_matches(cfg, db, roster, dry_run)
     poll_performances(cfg, db, dry_run)     # scorecards of matches we told the user about
-    write_dashboard(roster, hits, db, min_importance=cfg["alert"]["min_importance"])
+    write_dashboard(roster, hits, db, min_importance=cfg["alert"]["min_importance"], muted=cfg["muted_players"])
     quiet_check_in(cfg, db, now, sent_before, dry_run)
     return hits
 

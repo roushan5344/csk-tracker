@@ -32,7 +32,8 @@ known_players (names from every squad read, never pruned).
   Only `common_surnames` are rejected after any other first name (Title Case makes "Suffer Ellis" look like a name).
 - News never removes a player from a match alert; injury news only adds a ⚠️ flag. Report headlines as written.
 - Only a live match state (`MATCH_STATES`) means PLAYING NOW; unknown states are warned about, never shown as live.
-- All times are IST. The dashboard shows the same stories as Telegram (last 24 h, from `news_feed`).
+- All times are IST. The dashboard shows the same stories as Telegram (last 24 h, from `news_feed`), tagged again
+  with the current rules each run, so a fix also clears the page.
 
 ## Gotchas
 - Cricbuzz is Next.js: page data is in `self.__next_f.push` chunks (`next_data` helper), not plain HTML. Series

@@ -1187,7 +1187,7 @@ class TestPollingAndCheckIns(Base):
             t.main()
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "state.db")))
         with open(os.path.join(self.tmp, "dashboard.html"), encoding="utf-8") as f:
-            self.assertIn("<h2>Squad (24)</h2>", f.read())
+            self.assertIn("<div><b>24</b><span>IN THE SQUAD</span></div>", f.read())
         self.assertTrue(all(s["dry_run"] for s in self.sent))
         self.assertTrue(any(x.startswith("📅 CSK PLAYERS' MATCHES") for x in self.texts()))
 
@@ -1225,14 +1225,18 @@ class TestDashboard(Base):
         self.cricbuzz()
         hits = t.check_matches(self.cfg, self.db, self.roster, True)
         html = self.page(hits)
-        self.assertIn("<h2>Squad (30)</h2>", html)
-        rows = re.findall(r'<tr class="(\w*)"><td>([^<]*)</td>', html)
+        self.assertIn("<div><b>30</b><span>IN THE SQUAD</span></div>", html)
+        self.assertIn("1 SUPER KING<br>PLAYING NOW", html)
+        rows = re.findall(r'<article class="card (\w+)"><div class="top"><span class="ini">\w*</span><h3>([^<]*)</h3>', html)
         self.assertEqual(rows[0], ("live", "Dewald Brevis"))                   # live first
         self.assertEqual([c for c, _ in rows[:4]], ["live", "soon", "soon", "soon"])   # then grey: stumps, bench...
         self.assertEqual(rows[4][0], "off")
         self.assertIn('<span class="b soon">PLAYING TOMORROW, starts 30 Sep 17:00 IST, expected, squad not out yet</span>', html)
         self.assertIn('<a href="https://www.cricbuzz.com/live-cricket-scores/155422">India A vs Australia A · TEST</a>', html)
-        self.assertIn(("", "Aman Khan"), rows)                                  # everyone is listed
+        self.assertIn("<b>Aman Khan</b>", html)                                  # everyone is listed
+        live_card = html.split('<div class="live-card">')[1].split("</div></div>")[0]  # the live match, with its players
+        self.assertIn('<span class="tag">LIVE</span>', live_card)
+        self.assertIn("<b>Dewald Brevis</b>", live_card)
 
     def test_injury_flag_and_news_only_badges(self):
         self.cricbuzz()
@@ -1242,7 +1246,7 @@ class TestDashboard(Base):
         self.process(TOI_RSS)
         CLOCK[0] = T0
         html = self.page(t.check_matches(self.cfg, self.db, self.roster, True))
-        self.assertIn("expected, squad not out yet ⚠️ injury news</span>", html)
+        self.assertIn('expected, squad not out yet</span><span class="inj">', html)     # ⚠️ is its own chip
         self.assertIn('<span class="b soon">PLAYING TODAY, per news (not an official fixture)</span>', html)
 
     def test_news_list(self):
@@ -1250,12 +1254,13 @@ class TestDashboard(Base):
                                  self.item("CSK breaking story", "breaking", 5),
                                  self.item("CSK newer minor", "minor", 0.5),
                                  self.item("CSK rumour story", "important", 2, rumour=True, summary="One line.")])
-        titles = re.findall(r'<a href="[^"]*">([^<]*)</a> <small>', html)
+        titles = re.findall(r'<article class="n[^"]*"><div>.*?</div><a href="[^"]*">([^<]*)</a>', html)
         self.assertEqual(titles, ["CSK breaking story", "CSK rumour story", "CSK newer minor", "CSK minor story"])
         self.assertNotIn("CSK old story", html)                                 # over 24 hours
-        self.assertIn("<b>IMPORTANT</b> <em>(rumour)</em>", html)
-        self.assertIn("<br><small>One line.</small>", html)
-        self.assertIn("<h2>News, last 24 hours</h2>", html)
+        self.assertIn('<span class="i important">IMPORTANT</span> <em>(rumour)</em>', html)
+        self.assertIn("<p>One line.</p>", html)
+        self.assertIn('<article class="n lead breaking">', html)                 # a breaking story on top is the big card
+        self.assertIn("<h2>Latest news</h2>", html)
 
     def test_html_is_escaped_and_page_refreshes(self):
         html = self.page(latest=[self.item("CSK <script>alert(1)</script> & more")])
@@ -1264,9 +1269,13 @@ class TestDashboard(Base):
         self.assertIn('href="https://x.test/?a=1&amp;b=2"', html)
         self.assertIn("<meta http-equiv=refresh content=120>", html)
         self.assertIn("Updated 29 Sep 2026 08:05 IST", html)
+        self.assertNotIn("<nav>", html)                  # no menu: the links looked like tabs that did nothing
 
     def test_empty_news(self):
-        self.assertIn("<li>Nothing new yet.</li>", self.page())
+        html = self.page()
+        self.assertIn('<p class="empty">Nothing new yet.</p>', html)
+        self.assertIn("NO SUPER KINGS<br>ON THE FIELD", html)                  # no matches either
+        self.assertNotIn('<div class="live-card">', html)
 
     def test_stories_are_tagged_again_with_todays_rules(self):
         kept = "Rishabh Pant, Sarfaraz Khan Ready For Irani Cup In Srinagar; Aquib Nabi Misses Due To National Duty"
@@ -1278,7 +1287,7 @@ class TestDashboard(Base):
             self.item("Mood for today ✨ #WhistlePodu #Yellove", tags=["CSK (official)"])])   # the team's own post
         self.assertNotIn("Azam Khan", html)
         self.assertNotIn("Gulveer", html)
-        self.assertIn(f"{t.html.escape(kept)}</a> <small>Sarfaraz Khan · ", html)          # Aman Khan dropped
+        self.assertIn(f"{t.html.escape(kept)}</a><small>Sarfaraz Khan · ", html)          # Aman Khan dropped
         self.assertIn("Mood for today", html)
         muted = os.path.join(self.tmp, "m.html")
         t.write_dashboard(self.roster, [], self.db, muted, muted=["Sarfaraz Khan"])
@@ -1441,7 +1450,7 @@ class TestPerformance(Base):
         path = os.path.join(self.tmp, "d.html")
         t.write_dashboard(self.roster, [], self.db, path)
         with open(path, encoding="utf-8") as f:
-            self.assertIn("<td>Anshul Kamboj</td><td><br><small>📊 Live: 7-4-7-0</small>", f.read())
+            self.assertIn("<b>Anshul Kamboj</b><small>Live: 7-4-7-0</small>", f.read())
 
 
 if __name__ == "__main__":

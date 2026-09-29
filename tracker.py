@@ -1215,6 +1215,87 @@ def prune_state(db):
     db.commit()
 
 # ---------- dashboard ----------
+# Dashboard look: CSK yellow and navy, condensed italic headings (design canvas, 29 Sep 2026).
+STAR_SVG = ('<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#0B1D4A" stroke-width="2.2" '
+            'stroke-linejoin="round"><path d="M12 2l2.9 6.3 6.8.7-5.1 4.6 1.5 6.7L12 16.9 5.9 20.3l1.5-6.7L2.3 9l6.8-.7z"/></svg>')
+WARN_SVG = ('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
+            'stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>')
+DASHBOARD_CSS = """
+:root{--y:#F9CD05;--n:#0B1D4A;--b:#16307A;--bg:#F6F3EA;--mute:#4A5578;--live:#B3261E;--soon:#9A4A00;--off:#5A6484}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.4 Barlow,system-ui,sans-serif;background:var(--bg);color:var(--n)}
+header,.hero,section,footer{padding-left:64px;padding-right:64px}
+.logo,.kick,h1,h2,h3,.stats b,.eyebrow,.title,.ini,.rest b,.n a,.empty,footer b{font-family:'Barlow Condensed','Arial Narrow',sans-serif}
+header{background:var(--n);border-bottom:6px solid var(--y);display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 40px;min-height:78px;padding-top:8px;padding-bottom:8px}
+.logo{display:flex;align-items:center;gap:12px;font-weight:800;font-size:28px;letter-spacing:1px;color:#fff}
+.logo i{width:44px;height:44px;border-radius:50%;background:var(--y);display:grid;place-items:center}
+.upd{color:#C9D2EA;font-size:14px}
+.hero{position:relative;overflow:hidden;background:var(--y);display:flex;flex-wrap:wrap;gap:40px;justify-content:space-between;align-items:center;padding-top:56px;padding-bottom:56px}
+.hero:after{content:"";position:absolute;top:0;right:0;bottom:0;width:46%;background:var(--b);clip-path:polygon(20% 0,100% 0,100% 100%,0 100%)}
+.hero>*{position:relative;z-index:1}
+.kick{font-weight:700;font-size:18px;letter-spacing:4px}
+h1{margin:14px 0 24px;font-style:italic;font-weight:800;font-size:clamp(56px,8vw,112px);line-height:.9}
+.stats{display:flex;flex-wrap:wrap;gap:12px 0}
+.stats div{padding:0 26px;border-left:2px solid var(--n)}
+.stats div:first-child{padding-left:0;border-left:0}
+.stats b{display:block;font-weight:800;font-size:44px;line-height:1}
+.stats span{font-size:13px;font-weight:600;letter-spacing:1.5px}
+.live-card{width:460px;max-width:100%;background:#fff;border-radius:4px;padding:28px;display:flex;flex-direction:column;gap:10px;box-shadow:0 24px 48px rgba(0,0,0,.25)}
+.live-card small{color:var(--mute);font-size:14px}
+.live-card hr{width:100%;border:0;border-top:1px solid #E3E6EF;margin:4px 0}
+.tag{display:inline-flex;align-items:center;gap:6px;background:var(--live);color:#fff;font-size:12px;font-weight:600;letter-spacing:1.5px;padding:4px 10px;border-radius:2px}
+.tag:before{content:"";width:8px;height:8px;border-radius:50%;background:#fff}
+.title{font-weight:800;font-size:38px;line-height:1;color:var(--n);text-decoration:none}
+.title:hover{text-decoration:underline}
+.lbl{font-size:12px;font-weight:600;letter-spacing:1.5px;color:var(--mute)}
+.who{display:flex;justify-content:space-between;gap:12px;font-size:14px}
+.who span{color:#26325A;text-align:right}
+section{padding-top:64px;padding-bottom:40px}
+.eyebrow{font-weight:700;font-size:16px;letter-spacing:4px;text-transform:uppercase;color:#8A6A00}
+h2{margin:6px 0 28px;font-style:italic;font-weight:800;font-size:56px;line-height:1;text-transform:uppercase}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:20px}
+.card{background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 0 #E3E6EF}
+.card .top{position:relative;overflow:hidden;height:104px;background:var(--n);display:flex;align-items:flex-end;padding:14px 16px;border-bottom:6px solid #C9D2EA}
+.card.live .top{border-color:var(--live)}.card.soon .top{border-color:var(--y)}
+.card .ini{position:absolute;right:10px;top:-10px;font-style:italic;font-weight:800;font-size:100px;line-height:1;color:var(--b)}
+.card h3{position:relative;margin:0;font-weight:800;font-size:26px;line-height:1;color:#fff;text-transform:uppercase}
+.body{padding:16px;display:flex;flex-direction:column;align-items:flex-start;gap:10px}
+.body a{font-weight:600;color:var(--b)}
+.body small{color:var(--mute);font-size:13px}
+.b{color:#fff;background:var(--off);font-size:13px;font-weight:600;padding:5px 10px;border-radius:2px}
+.b.live{background:var(--live)}.b.soon{background:var(--soon)}
+.inj{display:inline-flex;align-items:center;gap:6px;background:var(--y);font-size:12px;font-weight:600;letter-spacing:1px;padding:4px 8px;border-radius:2px}
+.perf{font-size:13px;color:#26325A;background:var(--bg);padding:6px 8px;border-radius:2px}
+.rest{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+.rest li{background:#fff;border-radius:4px;min-height:64px;display:flex;align-items:center;gap:14px;padding:10px 16px}
+.rest .ini{flex-shrink:0;width:40px;height:40px;border-radius:50%;background:var(--y);display:grid;place-items:center;font-weight:800;font-size:16px}
+.rest b{display:block;font-weight:700;font-size:20px;line-height:1.1}
+.rest small{font-size:12px;color:#26325A}
+.news-s{background:var(--n);color:#fff;padding-bottom:72px;margin-top:24px}
+.news-s .eyebrow{color:var(--y)}
+.news{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
+.n{background:var(--b);border-radius:4px;padding:20px;display:flex;flex-direction:column;align-items:flex-start;gap:10px}
+.n a{font-weight:700;font-size:24px;line-height:1.1;color:#fff;text-decoration:none}
+.n a:hover{text-decoration:underline}
+.n p{margin:0;font-size:14px;color:#DDE3F3}
+.n small{font-size:13px;color:#C9D2EA}
+.n em{font-size:13px;color:#C9D2EA;margin-left:6px}
+.n.lead{grid-column:span 2;grid-row:span 3;justify-content:flex-end;background:var(--y);padding:40px}
+.n.lead a{font-weight:800;font-size:52px;line-height:1;color:var(--n)}
+.n.lead p{font-size:17px;color:#1B2750}.n.lead small,.n.lead em{font-size:14px;font-weight:600;color:var(--n)}
+.i{font-size:12px;font-weight:600;letter-spacing:1.5px;padding:3px 10px;border-radius:2px;background:#C9D2EA;color:var(--n)}
+.i.breaking{background:var(--live);color:#fff}.i.important{background:var(--y)}
+.empty{margin:0;border:2px dashed var(--b);border-radius:4px;padding:40px;text-align:center;font-weight:700;font-size:28px;color:#C9D2EA}
+footer{background:#07122F;color:#A9B4D6;font-size:13px;padding-top:32px;padding-bottom:32px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px}
+footer b{color:var(--y);font-weight:800;font-size:22px;letter-spacing:1px}
+@media(max-width:760px){
+header,.hero,section,footer{padding-left:16px;padding-right:16px}
+.hero{padding-top:32px;padding-bottom:28px}.hero:after{display:none}
+.stats div{padding:0 14px}h2{font-size:40px}
+.cards{grid-template-columns:1fr}.rest{grid-template-columns:repeat(2,minmax(0,1fr))}.rest li{padding:8px 10px;gap:8px}
+.news{grid-template-columns:1fr}.n.lead{grid-column:auto;grid-row:auto;padding:20px}.n.lead a{font-size:30px}}
+"""
+
 def write_dashboard(roster, hits, db, path=None, min_importance="minor", muted=()):
     names = [p["name"] for p in roster]
     order = {"live": 0, "soon": 1, "off": 2}
@@ -1227,20 +1308,51 @@ def write_dashboard(roster, hits, db, path=None, min_importance="minor", muted=(
     for player, line, final in db.execute("select player, line, final from performances where ts >= ? order by ts",
                                           (time.time() - 86400,)):
         perf[player] = (line, final)
-    rows = ""
+    esc = html.escape
+    def score(n):
+        return f'{"Final" if perf[n][1] else "Live"}: {perf[n][0]}' if n in perf else ""
+    def initials(n):
+        return "".join(w[0] for w in n.split())[:2].upper()
+    def match_title(h):
+        m = h["match"]
+        vs = f"{h['team']} vs {h['opponent']}" if h["opponent"] else m["title"]
+        return vs + (f" · {m['format']}" if m.get("format") else "")
+    cards, rest = "", ""                    # players with a match (live, then soon, then grey), then everyone else
     for n in sorted(names, key=lambda x: (order[best[x][0]] if x in best else 3, x)):
-        cls, badge = "", ""
-        if n in best:
-            cls, text, h = best[n]
-            m = h["match"]
-            vs = f"{h['team']} vs {h['opponent']}" if h["opponent"] else m["title"]
-            fmt = f" · {m['format']}" if m.get("format") else ""
-            badge = (f'<span class="b {cls}">{html.escape(text)}</span> '
-                     f'<a href="{html.escape(m["url"])}">{html.escape(vs + fmt)}</a> '
-                     f'<small>{html.escape(m["desc"])}, {html.escape(m["series"])}</small>')
-        if n in perf:
-            badge += f'<br><small>📊 {"Final" if perf[n][1] else "Live"}: {html.escape(perf[n][0])}</small>'
-        rows += f'<tr class="{cls}"><td>{html.escape(n)}</td><td>{badge}</td></tr>'
+        if n not in best:
+            s = f"<small>{esc(score(n))}</small>" if n in perf else ""
+            rest += f'<li><span class="ini">{esc(initials(n))}</span><div><b>{esc(n)}</b>{s}</div></li>'
+            continue
+        cls, text, h = best[n]
+        m, inj = h["match"], ""
+        if h.get("injury"):                 # the ⚠️ flag becomes its own chip
+            text, inj = text.replace(" ⚠️ injury news", ""), f'<span class="inj">{WARN_SVG}INJURY NEWS</span>'
+        s = f'<span class="perf">{esc(score(n))}</span>' if n in perf else ""
+        cards += (f'<article class="card {cls}"><div class="top"><span class="ini">{esc(initials(n))}</span>'
+                  f'<h3>{esc(n)}</h3></div><div class="body"><span class="b {cls}">{esc(text)}</span>{inj}'
+                  f'<a href="{esc(m["url"])}">{esc(match_title(h))}</a>'
+                  f'<small>{esc(m["desc"])}, {esc(m["series"])}</small>{s}</div></article>')
+    count = {c: sum(1 for x in best.values() if x[0] == c) for c in order}
+    if count["live"]:
+        headline = f'{count["live"]} SUPER KING{"S" if count["live"] > 1 else ""}<br>PLAYING NOW'
+    else:
+        headline = "NO SUPER KINGS<br>PLAYING RIGHT NOW" if best else "NO SUPER KINGS<br>ON THE FIELD"
+    live_card = ""
+    first_live = next((best[n][2] for n in sorted(best) if best[n][0] == "live"), None)
+    if first_live:                          # the first live match, with every squad player in it
+        m, who, done = first_live["match"], "", set()
+        for h in hits:
+            if h["match"]["id"] == m["id"] and h["player"] not in done:
+                done.add(h["player"])
+                note = score(h["player"]) or ("On the bench" if h["role"] == "bench" else ROLE_TEXT[h["role"]])
+                who += f'<div class="who"><b>{esc(h["player"])}</b><span>{esc(note)}</span></div>'
+        live_card = (f'<div class="live-card"><div><span class="tag">LIVE</span> <small>Started {esc(ist(m["start"]))}'
+                     f'</small></div><a class="title" href="{esc(m["url"])}">{esc(match_title(first_live))}</a>'
+                     f'<small>{esc(m["desc"])}, {esc(m["series"])}</small><hr>'
+                     f'<span class="lbl">SUPER KINGS IN THIS MATCH</span>{who}</div>')
+    stats = "".join(f"<div><b>{v}</b><span>{k}</span></div>" for v, k in (
+        (count["live"], "PLAYING NOW"), (count["soon"], "COMING UP"), (count["off"], "BENCH / OTHER"),
+        (len(names), "IN THE SQUAD")))
     news = ""
     day_ago = datetime.now(IST) - ALERT_MAX_AGE     # stories drop off after 24 h, like the alerts
     recent = []
@@ -1253,23 +1365,33 @@ def write_dashboard(roster, hits, db, path=None, min_importance="minor", muted=(
             recent.append({"title": title, "link": link, "summary": summary, "tags": tags, "importance": imp,
                            "rumour": bool(rumour), "when": when})
     newest_first = sorted(recent, key=lambda i: (RANKS[i["importance"]], i["when"] or datetime.min.replace(tzinfo=IST)), reverse=True)
-    for it in newest_first[:60]:
+    for k, it in enumerate(newest_first[:60]):
+        imp = it["importance"]
+        lead = " lead" if k == 0 and imp == "breaking" else ""     # a breaking story on top gets the big card
         w = it["when"].strftime("%d %b %H:%M") if it["when"] else ""
         r = " <em>(rumour)</em>" if it["rumour"] else ""
-        news += (f'<li class="{it["importance"]}"><b>{it["importance"].upper()}</b>{r} '
-                 f'<a href="{html.escape(it["link"])}">{html.escape(it["title"])}</a> '
-                 f'<small>{html.escape(", ".join(it["tags"]))} · {w} IST</small>'
-                 + (f'<br><small>{html.escape(it["summary"])}</small>' if it.get("summary") else "") + '</li>')
-    page = f"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+        news += (f'<article class="n{lead} {imp}"><div><span class="i {imp}">{imp.upper()}</span>{r}</div>'
+                 f'<a href="{esc(it["link"])}">{esc(it["title"])}</a>'
+                 + (f'<p>{esc(it["summary"])}</p>' if it.get("summary") else "")
+                 + f'<small>{esc(", ".join(it["tags"]))} · {w} IST</small></article>')
+    on_field = (f'<section id="field"><span class="eyebrow">Live first, then coming up</span><h2>On the field</h2>'
+                f'<div class="cards">{cards}</div></section>') if cards else ""
+    squad = (f'<section id="squad"><span class="eyebrow">No match right now · Squad ({len(names)})</span>'
+             f'<h2>{"The rest of the squad" if cards else "The squad"}</h2><ul class="rest">{rest}</ul></section>'
+             ) if rest else ""
+    news = f'<div class="news">{news}</div>' if news else '<p class="empty">Nothing new yet.</p>'
+    page =f"""<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <meta http-equiv=refresh content=120><title>CSK Tracker</title>
-<style>body{{font:15px system-ui;max-width:900px;margin:1rem auto;padding:0 1rem;background:#fffbe6;color:#222}}
-h1{{color:#b8860b}}table{{width:100%;border-collapse:collapse}}td{{padding:.35rem;border-bottom:1px solid #eee}}
-tr.live{{background:#ffe066;font-weight:600}}.b{{color:#fff;padding:2px 8px;border-radius:10px;font-size:12px}}
-.b.live{{background:#c00}}.b.soon{{background:#d97706}}.b.off{{background:#888}}
-li{{margin:.4rem 0}}li.breaking b{{color:#c00}}li.important b{{color:#d97706}}small{{color:#666}}</style>
-<h1>💛 CSK Tracker</h1><p>Updated {datetime.now(IST):%d %b %Y %H:%M} IST</p>
-<h2>Squad ({len(names)})</h2><table>{rows}</table>
-<h2>News, last 24 hours</h2><ul>{news or "<li>Nothing new yet.</li>"}</ul>"""
+<link rel=preconnect href="https://fonts.googleapis.com"><link rel=stylesheet href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,700;0,800;1,800&amp;family=Barlow:wght@400;500;600&amp;display=swap">
+<style>{DASHBOARD_CSS}</style>
+<header><span class="logo"><i>{STAR_SVG}</i>CSK TRACKER</span>
+<span class="upd">Updated {datetime.now(IST):%d %b %Y %H:%M} IST</span></header>
+<div class="hero" id="live"><div><span class="kick">WHISTLE PODU · MATCH CENTRE</span><h1>{headline}</h1>
+<div class="stats">{stats}</div></div>{live_card}</div>
+{on_field}{squad}
+<section id="news" class="news-s"><span class="eyebrow">Last 24 hours · same stories as Telegram</span><h2>Latest news</h2>
+{news}</section>
+<footer><b>CSK TRACKER</b><span>Fan-made · Cricbuzz, Cricinfo and Google News · all times IST · refreshes every 2 min</span></footer>"""
     with open(path or os.path.join(HERE, "dashboard.html"), "w", encoding="utf-8") as f:
         f.write(page)
 

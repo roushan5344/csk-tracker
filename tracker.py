@@ -453,10 +453,11 @@ def story_person(title, roster_names):
     candidates = {n for w in re.findall(r"[\w'.-]+", low) for n in other_names.get(w, ())}
     found = [(low.find(n.lower()), n) for n in candidates
              if n not in roster_names and re.search(rf"\b{re.escape(n.lower())}\b", low)
-             and not re.search(rf"\bafter {re.escape(n.lower())}\b", low)]    # "After Zaheer Khan, CSK to appoint..."
+             and not re.search(rf"\bafter {re.escape(n.lower())}\b", low)     # "After Zaheer Khan, CSK to appoint..."
+             and not re.search(rf"\b{re.escape(n.lower())}[- ]led\b", low)]    # "Zaheer Khan-Led Coaching Staff Rope In"
     if found:
         return min(found)[1]
-    m = re.match(r"^(?:[^:]{0,25}:\s*)?([A-Z][a-z]+) ([A-Z][a-z]+)\b", title)   # "IPL: Mohit Sharma set to..."
+    m = re.match(r"^(?:[^:]{0,25}:\s*)?([A-Z][a-z]+) ([A-Z][a-z]+)\b(?![- ][Ll]ed\b)", title)   # "IPL: Mohit Sharma set to..."
     if m and m.group(1).lower() not in NOT_A_PERSON and m.group(2).lower() not in NOT_A_PERSON:
         return f"{m.group(1)} {m.group(2)}"
     return None

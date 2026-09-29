@@ -13,9 +13,13 @@ Open `dashboard.html` in your browser (auto-refreshes every 2 min).
 
 ## 3. Keep it running 24/7 (free)
 **GitHub Actions:** put this folder in a GitHub repo (public repos get unlimited free Actions minutes; a private repo's free quota is only 2,000 min/month, so change the cron to every 30 min if private), add secrets `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
-(Settings → Secrets → Actions). `.github/workflows/tracker.yml` runs it every 10 min. Alerts are up to ~10-15 min late,
-and there is no live dashboard (run it locally for that). Each run checks matches; CSK/Dhoni news runs every run,
+(Settings → Secrets → Actions). `.github/workflows/tracker.yml` runs it every 10 min. Alerts are up to ~10-15 min late.
+Each run checks matches; CSK/Dhoni news runs every run,
 player news about every 20 min and the roster once a day (last-run times are kept in `state.db`).
+**Dashboard online:** each run also publishes the dashboard to GitHub Pages, at
+https://roushan5344.github.io/csk-tracker/ (updates about every 10 min, same stories as Telegram). One-time setup:
+Settings → Pages → Source: **GitHub Actions**. The page is public, like the repo: anyone with the link can open it
+(it shows only public cricket news and fixtures).
 **Always-on machine (Pi / small VPS):** `nohup python tracker.py &` or a systemd service. Near-real-time (news every 10 min, matches every 90 s).
 
 ## 4. Customise (`config.json`)
@@ -61,7 +65,7 @@ and retries; if it can't deliver (network down, Telegram error), the message wai
 the next run for up to a day. Messages over Telegram's 4,096-character limit are split into parts.
 
 ## Tests
-`python test_offline.py` runs the regression suite (106 tests, offline, fixed clock, real Cricbuzz / Google News /
+`python test_offline.py` runs the regression suite (107 tests, offline, fixed clock, real Cricbuzz / Google News /
 Bing samples): news, roster, matches, performance, Telegram messages, dashboard, config and workflows. GitHub runs
 it on every push (`.github/workflows/tests.yml`); a red ✗ on the commit means something broke.
 

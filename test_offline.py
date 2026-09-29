@@ -315,6 +315,25 @@ class TestRepoHygiene(unittest.TestCase):
         for action in ("actions/checkout@v7", "actions/setup-python@v7", "actions/cache@v6"):    # Node 24 versions
             self.assertIn(action, y)
 
+    def test_workflow_publishes_the_dashboard_to_pages(self):
+        y = self.read(".github", "workflows", "tracker.yml")
+        self.assertIn("\n  pages:", y)
+        run_job, pages_job = y.split("\n  pages:")
+        self.assertRegex(run_job, r"run: python tracker\.py --once[\s\S]*cp dashboard\.html site/index\.html")
+        self.assertRegex(run_job, r"uses: actions/upload-pages-artifact@v5\s*\n[\s\S]*path: site")
+        # A failed job skips saving state.db to the cache (actions/cache post-if: success()), which would repeat
+        # every alert of the run, so no step after the tracker may fail it.
+        later_steps = run_job.split("run: python tracker.py --once")[1].split("\n      - ")[1:]
+        self.assertEqual(len(later_steps), 2)
+        for step in later_steps:
+            self.assertIn("continue-on-error: true", step)
+        self.assertIn("needs: run", pages_job)
+        self.assertIn("uses: actions/deploy-pages@v5", pages_job)
+        self.assertRegex(pages_job, r"permissions:[^\n]*\n\s*pages: write\s*\n\s*id-token: write")
+        self.assertRegex(pages_job, r"environment:\s*\n\s*name: github-pages")
+        self.assertNotIn("id-token", run_job)                                  # the job with the secrets gets no more rights
+        self.assertNotIn("secrets.", pages_job)
+
     def test_test_workflow_runs_the_suite_on_every_push(self):
         y = self.read(".github", "workflows", "tests.yml")
         self.assertRegex(y, r"on:\s*\n\s*push:")

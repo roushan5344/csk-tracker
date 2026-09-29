@@ -21,3 +21,23 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # The dashboard this run wrote becomes the GitHub Pages site. A failed job doesn't save state.db to the
+      # cache, so the next run would repeat these alerts: that's why a Pages problem must never fail this job.
+      - run: mkdir site && cp dashboard.html site/index.html
+        continue-on-error: true
+      - uses: actions/upload-pages-artifact@v5
+        continue-on-error: true
+        with:
+          path: site
+  pages:                                  # https://roushan5344.github.io/csk-tracker/
+    needs: run
+    runs-on: ubuntu-latest
+    permissions:                          # only this job gets them; it never sees the Telegram secrets
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5

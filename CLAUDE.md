@@ -1,7 +1,8 @@
 # CSK Tracker – notes for Claude
 
 Tracks CSK players and MS Dhoni: Telegram alerts (news, matches, live scores) plus an HTML dashboard. Runs every
-10 min on GitHub Actions (`.github/workflows/tracker.yml`). README.md is the user guide; this file is the why.
+10 min on GitHub Actions (`.github/workflows/tracker.yml`), which also publishes the dashboard to GitHub Pages.
+README.md is the user guide; this file is the why.
 
 ## Files
 - `tracker.py` – everything. Sections: helpers, alerts, news, roster, match day, player performance, dashboard, main loop.

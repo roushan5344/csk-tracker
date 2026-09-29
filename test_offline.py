@@ -294,7 +294,7 @@ class TestRepoHygiene(unittest.TestCase):
             return f.read()
 
     def test_no_bot_token_in_any_committed_file(self):
-        for name in ("tracker.py", "config.json", "README.md", "test_offline.py", ".gitignore",
+        for name in ("tracker.py", "config.json", "README.md", "CLAUDE.md", "test_offline.py", ".gitignore",
                      os.path.join(".github", "workflows", "tracker.yml")):
             self.assertIsNone(re.search(r"\b\d{8,10}:[A-Za-z0-9_-]{30,}", self.read(name)), name)
 

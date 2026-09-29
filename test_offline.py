@@ -42,7 +42,6 @@ KEEP = {
         ("minor", ["CSK", "MS Dhoni"]),
     # short names alone (27-28 Sep 2026): missing these is worse than the odd wrong tag
     "Ellis, Davies ruled out to further deplete Aussies - cricket.com.au": ("breaking", ["Nathan Ellis"]),
-    "Ellis goes down as Aussies fall under another spin spell": ("important", ["Nathan Ellis"]),
     "3rd T20I: Noor, Naib out as Afghanistan elect to bowl against India, Thakur replaces Arshdeep": ("minor", ["Noor Ahmad"]),
     "Iyer's absence, Ruturaj's gain: CSK skipper cashing in on WI ODIs could boost India's middle-order resources":
         ("minor", ["CSK", "Ruturaj Gaikwad"]),
@@ -106,6 +105,36 @@ for h, want in [
 assert t.classify("Mohammad Yousuf names MS Dhoni appointment as decisive moment in Indian cricket's rise")[0] == "minor"
 assert t.classify("‘The game gave me many chapters’ - Zaheer Khan reflects on journey after CSK appointment")[0] == "breaking"
 print("namesakes and appointment rank OK")
+
+# Same story from many publishers (real, 28-29 Sep 2026): sent once per player and kind of event, plus a
+# higher-ranked report; the copies are neither sent nor on the dashboard. A different story still goes out.
+ELLIS = ["Ellis and Davies out of the South Africa tour with injury - Cricinfo",                       # important
+         "Nathan Ellis and Joel Davies out of final ODI against South Africa - thenewsmill.com",
+         "Ellis, Davies ruled out to further deplete Aussies - cricket.com.au",                         # breaking
+         "Injured Ellis ruled out of third ODI against South Africa - Cricbuzz",
+         "AUS vs SA: Nathan Ellis, Joel Davies ruled out of third ODI in Potchefstroom - Yardbarker",
+         "Nathan Ellis’ 3-fer vs SA | 1st ODI - Cricbuzz",                                          # other story
+         "Nathan Ellis, Joel Davies leave Australia’s South Africa tour injured - Cricket Addictor",
+         "Nathan Ellis, Joel Davies ruled out of 3rd ODI vs South Africa with injuries - CricTracker",
+         "Australia suffer Nathan Ellis blow ahead of 3rd SA ODI - NewsBytes",
+         "Double injury blow for Australia as Ellis, Davies ruled out of SA ODI",
+         "Nathan Ellis ruled out of third Australia vs South Africa ODI; Joel Davies also sent home",
+         "Australia faces setback ahead of final ODI against South Africa as Ellis and Davis withdraw",
+         # a real duplicate the old check missed: " - Older, wiser..." was mistaken for a publisher name
+         "Jamie Overton - Older, wiser and still bowling fast",
+         "Jamie Overton - Older, wiser and still bowling fast - Cricbuzz",
+         # team-only and unclassified stories are never grouped (two different CSK trade stories)
+         "IPL 2027 transfers: List of confirmed swaps, trade rumours as Hardik Pandya links with CSK",
+         "Washington Sundar CSK Trade Rumor: Is It Actually Happening? - TechnoSports Media Group"]
+gdb, n_sent, glatest = t.db_connect(os.path.join(tmp, "group.db")), len(sent), []
+t.process_items(cfg, gdb, t.parse_rss(rss(ELLIS)), names, True, glatest, first_run=False)
+got = [i["title"] for i in glatest]
+assert got == [ELLIS[0], ELLIS[2], ELLIS[5], ELLIS[12], ELLIS[14], ELLIS[15]], got
+assert len(sent) - n_sent == 6                                    # Telegram gets the same six
+assert t.story_event("Virat Kohli names his 'ideal ODI batter', leaves out Rohit Sharma and MS Dhoni") != "injury"
+assert t.story_event("South Africa announce 18-member squad for 1st Test vs Australia: Brevis dropped, "
+                     "3 injured pacers unavailable") == "selection"
+print("same story from other publishers: sent once (+ a higher-ranked report), not on the dashboard")
 
 latest2 = []
 t.process_items(cfg, db, t.parse_rss(rss([

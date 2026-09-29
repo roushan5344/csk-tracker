@@ -55,6 +55,11 @@ All times are IST. Run `python test_offline.py` after changes; it uses real Cric
   ("Ellis, Davies ruled out", "Ruturaj's gain"). A headline that spells out another cricketer's full name
   ("Kuldeep Yadav", "KL Rahul") isn't counted for our player: those names come from `namesakes` in config.json plus
   every Cricbuzz squad the tracker reads. Some wrong tags remain, mostly non-cricket "Khan" stories.
+- Duplicates: a near-identical headline is dropped, and the same story told by other publishers in other words is
+  grouped by player and kind of event (injury, selection, performance, trade, captaincy, coach, retirement): once a
+  story about a player is sent, further reports of the same kind within 24 hours are neither sent nor shown on the
+  dashboard, unless they rank higher ("injury doubt" -> "ruled out"). Team-only stories and stories of no
+  recognised kind are never grouped, so a few repeats of those can still get through.
 - Match alerts show recent injury headlines (last 4 days) under a player who isn't confirmed in the XI yet, marked
   ⚠️. The player is never removed because of news; Cricbuzz's squad and playing XI decide.
 - If Cricbuzz changes its page format you'll see `[warn] no match data...` or a roster-source warning.

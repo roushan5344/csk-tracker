@@ -51,6 +51,23 @@ MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", 
 INJURY = (r"\b(injur\w*|ruled out|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|withdr[ae]w\w*"
           r"|miss(es|ed)? (the )?(rest|remainder|series|match|game|tour)|out of the|doubt\w*|limp\w* off|goes down"
           r"|went down|left the field|leaves the field|retired hurt|concussion|sore|stiff\w*|unavailable|fitness)\b")
+# Kinds of event, to spot the same story told by different publishers ("Ellis, Davies ruled out..." / "Australia
+# suffer Nathan Ellis blow..."). First match wins; selection comes before injury so "Brevis dropped, 3 injured
+# pacers" is a selection story. The injury words are strict ("leaves out Dhoni" is not an injury).
+STORY_EVENTS = [
+    ("retirement", r"retir(e|es|ed|ement)"),
+    ("captaincy", r"captaincy|(new|named|appointed|as) (captain|skipper|vice-captain)|steps? down|leadership"),
+    ("coach", r"head coach|new coach|coach(ing)? (role|job|staff)|(csk|coach\w*|captain\w*)('s)? appointment"),
+    ("transfer", r"trade[sd]?|trading|released|retained|retention|auction|signs|signed|joins|ropes? in|roped in|swaps?"),
+    ("selection", r"named (in|for)|selected|dropped|picked|included|recalled|omitted|omission|snub\w*|playing xi"
+                  r"|announce[sd]? [\w\- ]{0,30}squad"),
+    ("injury", r"injur\w*|ruled out|out of (the |this |next |final |remaining )?(match|game|series|tour|odi|t20i?|test"
+               r"|season|ipl|tournament|squad)|withdr[ae]w\w*|sent home|leaves? (the )?(tour|squad|camp)|blow|setback"
+               r"|strain\w*|side issue|hamstring|niggle|scans?|fracture\w*|surgery|doubtful|miss(es|ed)? (the )?(rest"
+               r"|remainder|series|match|game|tour|odi|test|final)|goes down|went down|limp\w* off|retired hurt|concussion"),
+    ("performance", r"centur(y|ies)|hundred|fifty|fifties|\d+ wickets?|five-for|fifer|four-for|\d-fer|hat-trick|record"
+                    r"|\d+ runs|catch|knock|sixes|haul|masterclass|player of the match|potm"),
+]
 # Headlines where a tracked player is only a yardstick for someone else ("Gill joins MS Dhoni in elite list").
 # {s} is the player's surname, lower case.
 PASSING = [r"\b(joins|equals?|equalled|breaks?|broke|surpass\w*|overtak\w*|goes past|went past|levels? with|eclips\w*"
@@ -84,7 +101,9 @@ def norm(s):
     return re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
 
 def tokens(s):
-    s = re.sub(r"\s[-|]\s[^-|]+$", "", s)          # drop " - Publisher" suffix
+    pub = re.search(r"\s[-|]\s([^-|]+)$", s)         # drop a " - Publisher" suffix, but only a short one:
+    if pub and len(pub.group(1).split()) <= 4:     # "Jamie Overton - Older, wiser and still bowling fast" keeps its end
+        s = s[:pub.start()]
     s = re.sub(r"#\w+", "", s)                      # hashtags (#WhistlePodu) are on every official post
     return set(w[:5] for w in norm(s).split() if len(w) > 2)   # crude stemming
 
@@ -122,6 +141,9 @@ def db_connect(path=None):
     db.execute("create table if not exists news_fixtures(player text, day text, days integer, title text, link text,"
                " source text, primary key(player, day))")
     db.execute("create table if not exists news_checked(key text primary key, ts real)")
+    # best rank sent per player and kind of event, so other publishers' copies of a story aren't sent again
+    db.execute("create table if not exists story_events(player text, event text, rank integer, ts real,"
+               " primary key(player, event))")
     return db
 
 # ---------- alerts ----------
@@ -276,6 +298,34 @@ def mark_seen(db, title, when=None):
                (key, title, time.time(), when.timestamp() if when else None))
     db.commit()
 
+def story_event(title):
+    return next((e for e, p in STORY_EVENTS if re.search(rf"\b({p})\b", title, re.I)), None)
+
+def repeat_story(db, it, tags, imp, roster_names):
+    """The same story from another publisher: every tagged player already had a story of this kind in the last
+    24 hours, ranked at least as high. Team-only stories, the team's own posts and stories of no recognised kind
+    are never treated as repeats, so an unusual story can't be swallowed."""
+    players, ev = [p for p in tags if p in roster_names], story_event(it["title"])
+    if not players or not ev or it.get("official"):
+        return False
+    for p in players:
+        row = db.execute("select rank from story_events where player=? and event=? and ts>=?",
+                         (p, ev, time.time() - 86400)).fetchone()
+        if not row or RANKS[imp] > row[0]:          # new, or a higher-ranked report ("injury doubt" -> "ruled out")
+            return False
+    return True
+
+def remember_story(db, it, tags, imp, roster_names):
+    ev = story_event(it["title"])
+    if not ev or it.get("official"):
+        return
+    for p in (p for p in tags if p in roster_names):
+        row = db.execute("select rank from story_events where player=? and event=? and ts>=?",
+                         (p, ev, time.time() - 86400)).fetchone()
+        db.execute("insert or replace into story_events values(?,?,?,?)",
+                   (p, ev, max(RANKS[imp], row[0]) if row else RANKS[imp], time.time()))
+    db.commit()
+
 def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
     now = datetime.now(IST)
     oldest, fresh_after = now - MAX_NEWS_AGE, now - ALERT_MAX_AGE
@@ -299,6 +349,9 @@ def process_items(cfg, db, items, roster_names, dry_run, latest, first_run):
             continue
         if RANKS[imp] < RANKS[cfg["alert"]["min_importance"]]:
             continue
+        if repeat_story(db, it, tags, imp, roster_names):   # another publisher's copy: not sent, not on the dashboard
+            continue
+        remember_story(db, it, tags, imp, roster_names)
         latest.append({**it, "tags": tags, "importance": imp, "rumour": rumour})   # dashboard = what alerts cover
         if first_run:                       # don't spam old stories on first start
             continue
